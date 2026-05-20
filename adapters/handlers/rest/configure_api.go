@@ -683,11 +683,6 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		DrainSleep:                      appState.ServerConfig.Config.Raft.DrainSleep.Get(),
 		MaxTenantsPerCollection:         appState.ServerConfig.Config.UsageLimits.MaxTenantsPerCollection,
 		UsageLimitsErrorMessage:         appState.ServerConfig.Config.UsageLimits.ErrorMessage,
-		// Deterministic wiped-joiner signal: noteWipedJoinerProgress
-		// uses this to distinguish a wiped node catching up
-		// (callback returns false during catch-up) from a runtime
-		// apply on a fresh-bootstrapped node (callback returns true).
-		RaftBootstrapComplete: appState.DB.RaftBootstrapComplete,
 	}
 	for _, name := range appState.ServerConfig.Config.Raft.Join[:rConfig.BootstrapExpect] {
 		if strings.Contains(name, rConfig.NodeID) {
