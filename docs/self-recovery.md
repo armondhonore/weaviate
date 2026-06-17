@@ -145,25 +145,28 @@ a shard folder found missing during it triggers recovery either way.
 ### Wiped-node log-replay rejoin (no operator-forced snapshot)
 
 A node that comes up with **no local RAFT state** and the feature enabled is
-treated as a *wiped-joiner candidate* (`Store.wipedJoinerCandidate`): it does
-**not** report ready eagerly, and Apply forces every replayed entry
-"schema-only" so no shard folders are created mid-catch-up. When the node joins
-an existing cluster, the leader returns its committed index at join in
+treated as a *wiped-joiner candidate* (`Store.wipedJoinerCandidate`). It reports
+ready eagerly (readiness is not deferred — fresh-cluster formation must not be
+gated on a wiped-joiner watcher), but Apply forces every replayed entry
+"schema-only" so no shard folders are materialised mid-catch-up. When the node
+joins an existing cluster, the leader returns its committed index at join in
 `JoinPeerResponse.leader_commit_index` — the **catch-up barrier**: every
 pre-existing class's `ADD_CLASS` has an index at or below it. `Store.SetJoinBarrier`
 records it, and once Apply has applied up to the barrier it runs the single load
-pass (`finishWipedJoinerReload`, on the Apply thread) — which re-hydrates any
-missing shard from a peer instead of materialising it empty. This covers the
-log-replay rejoin path **without** an operator-forced snapshot; the
-`POST /debug/raft/snapshot` step is now only a test convenience for forcing the
-InstallSnapshot path deterministically.
+pass (`finishWipedJoinerReload`, on the Apply thread) — which installs
+`RecoveringShard` wrappers (excluded from cluster reads while they re-hydrate
+from peers, the same way the snapshot-Restore path behaves) instead of
+materialising empty shards. This covers the log-replay rejoin path **without** an
+operator-forced snapshot; the `POST /debug/raft/snapshot` step is now only a test
+convenience for forcing the InstallSnapshot path deterministically.
 
 `Store.watchWipedJoiner` handles the cases the barrier doesn't: a node that
-**formed a fresh cluster** (no barrier — nothing to recover) loads once it has
-caught up to the tiny committed index, and a joiner that can't reach its barrier
-(an older leader that supplied no index, or an unreachable cluster) falls back to
-an eager load after a no-progress timeout. A node with intact data, a feature-off
-node, and a metadata-only voter keep the legacy eager-ready behaviour. The whole
+**formed a fresh cluster** (no barrier — nothing to recover) clears the
+schema-only suppression once it has caught up to the tiny committed index, and a
+joiner that can't reach its barrier (an older leader that supplied no index, or an
+unreachable cluster) falls back to an eager load after a no-progress timeout. A
+node with intact data, a feature-off node, and a metadata-only voter keep the
+legacy eager-ready behaviour. The whole
 mechanism is gated on `SELF_RECOVERY_ENABLED`; off ⇒ startup is unchanged. An
 older leader (pre-`leader_commit_index`) returns 0, so a new joiner falls back to
 the legacy path — recovery on log-replay rejoin engages once both ends are upgraded.

@@ -200,7 +200,7 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 	// WithWeaviateTmpfsData), so every container stop drops the data — there
 	// is no intact restart. That a node with prior RAFT state is never
 	// treated as a wiped joiner is covered by the unit test
-	// TestWipedJoinerShouldDefer ("prior applied state excluded").
+	// TestWipedJoinerIsCandidate ("prior applied state excluded").
 }
 
 // TestSelfRecoveryViaLogReplayMultiTenant verifies the same log-replay

@@ -52,7 +52,7 @@ type Bootstrapper struct {
 	jitter      time.Duration
 }
 
-// NewBootstrapper constructs a new bootsrapper. onJoin may be nil; when set it
+// NewBootstrapper constructs a new bootstrapper. onJoin may be nil; when set it
 // receives the leader's committed index on a successful join.
 func NewBootstrapper(peerJoiner PeerJoiner, raftID string, raftAddr string, voter bool, r resolver.ClusterStateReader, isStoreReady func() bool, onJoin func(leaderCommitIndex uint64)) *Bootstrapper {
 	return &Bootstrapper{

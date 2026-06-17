@@ -467,26 +467,33 @@ func (st *Store) Open(ctx context.Context) (err error) {
 	}
 
 	snapIndex := lastSnapshotIndex(st.snapshotStore)
-	if wipedJoinerShouldDefer(st.cfg.SelfRecoveryEnabled, st.cfg.MetadataOnlyVoters, st.lastAppliedIndexToDB.Load(), snapIndex) {
-		// Wiped node with self-recovery on: defer "ready" so the startup
-		// pass re-hydrates missing shards from peers. The reload fires once the
-		// join barrier is reached (Apply thread), or via watchWipedJoiner's
-		// founding-node / no-progress fallbacks. lastAppliedIndexToDB stays 0,
-		// leaving the snapshot-Restore path unaffected.
-		//
-		// Ordering invariant: the watcher reads st.raft (non-atomic), which
-		// recoverSingleNode reassigns — but recoverSingleNode runs above, before
-		// this flag is set and the watcher spawned, so the watcher never observes
-		// a concurrent reassignment.
-		st.wipedJoinerCandidate.Store(true)
-		st.wipedJoinerDone = make(chan struct{})
-		enterrors.GoWrapper(func() {
-			defer close(st.wipedJoinerDone)
-			st.watchWipedJoiner()
-		}, st.log)
-	} else if st.lastAppliedIndexToDB.Load() == 0 && snapIndex == 0 {
-		// if empty node report ready (legacy behaviour)
+	if st.lastAppliedIndexToDB.Load() == 0 && snapIndex == 0 {
+		// Empty node reports ready immediately (as before — readiness is NOT
+		// deferred, so fresh-cluster formation isn't gated on a wiped-joiner
+		// watcher tick).
 		st.dbLoaded.Store(true)
+
+		if wipedJoinerIsCandidate(st.cfg.SelfRecoveryEnabled, st.cfg.MetadataOnlyVoters, st.lastAppliedIndexToDB.Load(), snapIndex) {
+			// Wiped-joiner candidate: stay ready, but force schema-only catch-up
+			// so a joiner doesn't materialise empty shards. The barrier reload
+			// (Apply thread) then installs RecoveringShards — excluded from
+			// cluster reads while they re-hydrate from peers, same as the
+			// snapshot-Restore path. watchWipedJoiner clears the suppression for
+			// a fresh cluster (nothing to recover) and is the no-progress
+			// fallback. lastAppliedIndexToDB stays 0, leaving snapshot-Restore
+			// unaffected.
+			//
+			// Ordering invariant: the watcher reads st.raft (non-atomic), which
+			// recoverSingleNode reassigns — but recoverSingleNode runs above,
+			// before this flag is set and the watcher spawned, so the watcher
+			// never observes a concurrent reassignment.
+			st.wipedJoinerCandidate.Store(true)
+			st.wipedJoinerDone = make(chan struct{})
+			enterrors.GoWrapper(func() {
+				defer close(st.wipedJoinerDone)
+				st.watchWipedJoiner()
+			}, st.log)
+		}
 	}
 
 	st.lastAppliedIndex.Store(st.raft.AppliedIndex())
@@ -644,9 +651,15 @@ func (st *Store) Close(ctx context.Context) error {
 
 	// Wait for the wiped-joiner watcher (if any) to exit before closing the
 	// schema manager, so a shutdown can't race an in-flight self-recovery
-	// reload. It observes open=false on its next tick (≤500ms) and returns.
+	// reload. It observes open=false on its next tick (≤500ms) and returns;
+	// bounded by ctx so a slow in-flight reload can't block shutdown past the
+	// caller's deadline.
 	if st.wipedJoinerDone != nil {
-		<-st.wipedJoinerDone
+		select {
+		case <-st.wipedJoinerDone:
+		case <-ctx.Done():
+			st.log.WithError(ctx.Err()).Warn("wiped-joiner watcher still running at shutdown deadline; proceeding")
+		}
 	}
 
 	// close log store after raft shutdown to persist final log entries
@@ -749,10 +762,10 @@ const wipedJoinerNoProgressTimeout = 3 * time.Minute
 // The following pure predicates hold the wiped-joiner decision logic so it can
 // be unit-tested independently of raft/DB wiring.
 
-// wipedJoinerShouldDefer reports whether a node with no committed state should
-// defer readiness as a wiped-joiner candidate. Prior state, a metadata-only
-// voter, or feature-off excludes it.
-func wipedJoinerShouldDefer(selfRecoveryEnabled, metadataOnly bool, lastAppliedToDB, snapIndex uint64) bool {
+// wipedJoinerIsCandidate reports whether a node with no committed state runs the
+// wiped-joiner self-recovery machinery (schema-only catch-up + barrier reload).
+// Prior state, a metadata-only voter, or feature-off excludes it.
+func wipedJoinerIsCandidate(selfRecoveryEnabled, metadataOnly bool, lastAppliedToDB, snapIndex uint64) bool {
 	return selfRecoveryEnabled && !metadataOnly && lastAppliedToDB == 0 && snapIndex == 0
 }
 
@@ -840,11 +853,24 @@ func (st *Store) watchWipedJoiner() {
 			applied = st.raft.AppliedIndex()
 			commit = st.raft.CommitIndex()
 		}
+		hasLeader := st.Leader() != ""
+		joined := st.wipedJoinerJoined.Load()
 
-		if wipedJoinerFreshClusterReady(st.wipedJoinerJoined.Load(), st.Leader() != "", commit, applied) {
+		if wipedJoinerFreshClusterReady(joined, hasLeader, commit, applied) {
 			st.log.Info("wiped joiner: caught up on a fresh cluster (nothing to recover); loading")
 			st.finishWipedJoinerReload()
 			return
+		}
+
+		// Don't arm the no-progress timer until the node is actually catching up
+		// — joined an existing cluster, or a leader exists. While still
+		// bootstrapping/joining, zero apply progress is expected; arming early
+		// could eager-load (and latch reloaded) before SetJoinBarrier runs,
+		// skipping recovery on a later successful join.
+		if !joined && !hasLeader {
+			lastApplied = applied
+			stableSince = time.Time{}
+			continue
 		}
 
 		// No-progress fallback: a joiner that can't reach its barrier (e.g. an

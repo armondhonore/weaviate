@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWipedJoinerShouldDefer(t *testing.T) {
+func TestWipedJoinerIsCandidate(t *testing.T) {
 	tests := []struct {
 		name            string
 		selfRecovery    bool
@@ -31,7 +31,7 @@ func TestWipedJoinerShouldDefer(t *testing.T) {
 		snapIndex       uint64
 		want            bool
 	}{
-		{name: "wiped node, feature on -> defer", selfRecovery: true, want: true},
+		{name: "wiped node, feature on -> candidate", selfRecovery: true, want: true},
 		{name: "feature off -> legacy eager", selfRecovery: false, want: false},
 		{name: "metadata-only voter excluded", selfRecovery: true, metadataOnly: true, want: false},
 		// "node with prior state is excluded" (the negative the log-replay
@@ -42,7 +42,7 @@ func TestWipedJoinerShouldDefer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want,
-				wipedJoinerShouldDefer(tt.selfRecovery, tt.metadataOnly, tt.lastAppliedToDB, tt.snapIndex))
+				wipedJoinerIsCandidate(tt.selfRecovery, tt.metadataOnly, tt.lastAppliedToDB, tt.snapIndex))
 		})
 	}
 }
