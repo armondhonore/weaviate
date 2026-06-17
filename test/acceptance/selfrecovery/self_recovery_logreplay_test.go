@@ -260,6 +260,20 @@ func TestSelfRecoveryViaLogReplayMultiTenant(t *testing.T) {
 		helper.CreateTenants(t, mtClass.Class, ts)
 	})
 
+	t.Run("wait for tenant shards to be placed on all nodes", func(t *testing.T) {
+		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+			verbose := verbosity.OutputVerbose
+			body, err := helper.Client(t).Nodes.NodesGetClass(
+				nodes.NewNodesGetClassParams().WithOutput(&verbose).WithClassName(mtClass.Class), nil)
+			require.NoError(ct, err)
+			require.NotNil(ct, body.Payload)
+			require.Len(ct, body.Payload.Nodes, 3)
+			for _, n := range body.Payload.Nodes {
+				require.Len(ct, n.Shards, len(tenants), "node %s tenant-shard count", n.Name)
+			}
+		}, 60*time.Second, 1*time.Second)
+	})
+
 	t.Run("ingest objects per tenant", func(t *testing.T) {
 		for _, tenant := range tenants {
 			batch := make([]*models.Object, objsPerTenant)
