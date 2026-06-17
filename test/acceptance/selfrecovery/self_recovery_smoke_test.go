@@ -43,8 +43,8 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 		WithWeaviateCluster(3).
 		WithWeaviateEnv("SELF_RECOVERY_ENABLED", "true").
 		WithWeaviateEnv("SELF_RECOVERY_CONCURRENCY", "2").
-		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true"). // /replication/* observability (and RF>1 schema cmds)
-		WithWeaviateWithDebugPort().                         // /debug/self-recovery/* lives on the profiling port
+		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
+		WithWeaviateWithDebugPort().
 		Start(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -57,14 +57,6 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 	debugURI := compose.GetWeaviate().DebugURI()
 	require.NotEmpty(t, debugURI, "DebugURI is empty — was WithWeaviateWithDebugPort() called?")
 
-	// Prometheus metrics live on a separate port (2112 by default,
-	// PROMETHEUS_MONITORING_ENABLED-gated) which the test/docker
-	// harness does not currently expose. Metric registration is
-	// covered by the unit test in cluster/replication/selfrecovery.
-
-	// Probing accept-empty with an unknown shard checks both that the
-	// handler is registered and that the schema gate maps the error to
-	// 404 (not the generic 500 the handler used to return).
 	t.Run("accept_empty_endpoint_is_reachable", func(t *testing.T) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"http://"+debugURI+"/debug/self-recovery/accept-empty?collection=NoSuchClass&shard=NoSuchShard", nil)
@@ -76,11 +68,7 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 			"unknown class/shard should yield 404 (schema gate); got %d", resp.StatusCode)
 	})
 
-	// /restart on a shard whose live directory already exists must be
-	// rejected with 409 Conflict (recovery already completed / never
-	// happened — restarting would re-copy peer data over a healthy shard).
 	t.Run("restart_rejects_when_shard_is_live", func(t *testing.T) {
-		// Quorum must be formed before an RF=3 CreateClass succeeds.
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			body, err := helper.Client(t).Nodes.NodesGet(nodes.NewNodesGetParams(), nil)
 			require.NoError(ct, err)
@@ -97,7 +85,6 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 		cls.Vectorizer = "none"
 		helper.CreateClass(t, cls)
 
-		// Resolve the (single) shard name once the shard is placed.
 		var shardName string
 		verbose := verbosity.OutputVerbose
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
@@ -136,7 +123,7 @@ func TestSelfRecoveryDebugEndpointsDisabledWhenFeatureOff(t *testing.T) {
 	defer cancel()
 
 	compose, err := docker.New().
-		WithWeaviate(). // single node; feature flag deliberately NOT set
+		WithWeaviate().
 		WithWeaviateWithDebugPort().
 		Start(ctx)
 	require.NoError(t, err)

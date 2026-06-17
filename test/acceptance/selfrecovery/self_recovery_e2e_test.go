@@ -71,17 +71,10 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 		WithWeaviateCluster(3).
 		WithWeaviateEnv("SELF_RECOVERY_ENABLED", "true").
 		WithWeaviateEnv("SELF_RECOVERY_CONCURRENCY", "2").
-		// Required to expose the /replication/* observability API
-		// (without it, list/details endpoints return 501).
 		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
-		// Pins the snapshot/Restore rejoin path (log-replay rejoin is
-		// covered by self_recovery_logreplay_test.go): trimming trailing
-		// logs forces the leader to InstallSnapshot a far-behind joiner,
-		// and the test POSTs /debug/raft/snapshot before wipe so a
-		// snapshot is guaranteed regardless of RAFT_SNAPSHOT_THRESHOLD.
 		WithWeaviateEnv("RAFT_TRAILING_LOGS", "1").
-		WithWeaviateWithDebugPort(). // /debug/raft/snapshot lives on the profiling port
-		WithWeaviateTmpfsData().     // so WipeNodeDataAt's stop+start truly empties /data
+		WithWeaviateWithDebugPort().
+		WithWeaviateTmpfsData().
 		Start(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -93,19 +86,13 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	helper.SetupClient(compose.GetWeaviate().URI())
 
 	const (
-		objCount = 500 // small enough that the test runs fast; large enough that recovery isn't trivial
-		// 0-based index into compose.d.containers; with no aux containers
-		// (contextionary etc.) a 3-node cluster has indices 0/1/2.
+		objCount = 500
 		wipedIdx = 2
 	)
 	wipedNodeName := docker.Weaviate2
 	paragraphClass := articles.ParagraphsClass()
 
 	t.Run("wait for cluster to form quorum", func(t *testing.T) {
-		// docker compose returns once the containers are up, but the
-		// RAFT FSM may still be electing/joining. CreateClass with
-		// RF=3 fails with "1 available, 3 requested" until all 3
-		// nodes have joined.
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			body, err := helper.Client(t).Nodes.NodesGet(nodes.NewNodesGetParams(), nil)
 			require.NoError(ct, err)
@@ -119,19 +106,12 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 
 	t.Run("create RF=3 single-shard collection", func(t *testing.T) {
 		paragraphClass.ShardingConfig = map[string]interface{}{"desiredCount": 1}
-		// Async replication explicitly OFF so SELF_RECOVERY is the
-		// only path that can restore the data after the wipe. If
-		// the post-recovery object-count check passes, the recovery
-		// went through SELF_RECOVERY (not silent async-rep backfill).
 		paragraphClass.ReplicationConfig = &models.ReplicationConfig{Factor: 3, AsyncEnabled: false}
-		paragraphClass.Vectorizer = "none" // we don't run vector queries; avoid pulling in a vectorizer module
+		paragraphClass.Vectorizer = "none"
 		helper.CreateClass(t, paragraphClass)
 	})
 
 	t.Run("wait for shard placement on all 3 nodes", func(t *testing.T) {
-		// CreateClass returns before the shard is routable on every node.
-		// Without this wait, the first batch hits "shard not found" during
-		// the broadcast-to-all-replicas write path.
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			verbose := verbosity.OutputVerbose
 			body, err := helper.Client(t).Nodes.NodesGetClass(
@@ -154,9 +134,6 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 				WithContents(fmt.Sprintf("paragraph#%d", i)).
 				Object()
 		}
-		// Even after the shard appears in /nodes, the broadcast write
-		// path can race against per-replica shard registration. Retry
-		// on transient "shard not found".
 		require.EventuallyWithT(t, func(ct *assert.CollectT) {
 			params := batchclient.NewBatchObjectsCreateParams().WithBody(batchclient.BatchObjectsCreateBody{Objects: batch})
 			resp, err := helper.Client(t).Batch.BatchObjectsCreate(params, nil)
@@ -171,9 +148,6 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	})
 
 	t.Run("verify all 3 nodes report shard loaded", func(t *testing.T) {
-		// ObjectCount in /nodes is async-updated, unreliable right after
-		// ingest; Loaded=true is the pre-wipe signal. Full-count check is
-		// post-recovery (recovery_completes subtest).
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			verbose := verbosity.OutputVerbose
 			body, err := helper.Client(t).Nodes.NodesGetClass(
@@ -189,8 +163,6 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	})
 
 	t.Run("force a RAFT snapshot before wipe", func(t *testing.T) {
-		// Snapshot every node so the wiped node's rejoin deterministically
-		// receives InstallSnapshot rather than log replay.
 		for i := 0; i < 3; i++ {
 			forceRaftSnapshot(ctx, t, compose, i)
 		}
@@ -199,13 +171,10 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	t.Run("wipe node-3 data and restart", func(t *testing.T) {
 		common.WipeNodeDataAt(ctx, t, compose, wipedIdx)
 		common.StartNodeAt(ctx, t, compose, wipedIdx)
-		// Re-point the helper client at node-1 since node-3's port may have changed on restart.
 		helper.SetupClient(compose.GetWeaviate().URI())
 	})
 
 	t.Run("a SELF_RECOVERY op was registered for node-3", func(t *testing.T) {
-		// Proves recovery went through SELF_RECOVERY, not silent async-rep
-		// backfill (disabled on the class).
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			body, err := helper.Client(t).Replication.ListReplication(
 				replication.NewListReplicationParams().WithTargetNode(&wipedNodeName), nil)
@@ -242,7 +211,7 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 
 	t.Run("direct query to node-3 returns full data at consistency=ONE", func(t *testing.T) {
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
-			for i := 0; i < 10; i++ { // sample, not exhaustive
+			for i := 0; i < 10; i++ {
 				id := strfmt.UUID(fmt.Sprintf("00000000-0000-0000-0000-%012d", i+1))
 				exists, err := common.ObjectExistsCL(t, compose.ContainerURI(wipedIdx), paragraphClass.Class, id, types.ConsistencyLevelOne)
 				assert.NoError(ct, err)
@@ -265,10 +234,7 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 	compose, err := docker.New().
 		WithWeaviateCluster(3).
 		WithWeaviateEnv("SELF_RECOVERY_ENABLED", "true").
-		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true"). // for /replication/* endpoints
-		// Same as TestSelfRecoveryEndToEnd: trim trailing logs so a
-		// far-behind joiner must receive InstallSnapshot. The test
-		// hits /debug/raft/snapshot before wipe.
+		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
 		WithWeaviateEnv("RAFT_TRAILING_LOGS", "1").
 		WithWeaviateWithDebugPort().
 		WithWeaviateTmpfsData().
@@ -284,19 +250,14 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 
 	const (
 		objCount = 200
-		wipedIdx = 2 // 0-based: third weaviate
+		wipedIdx = 2
 	)
 	wipedNodeName := docker.Weaviate2
 	paragraphClass := articles.ParagraphsClass()
 	paragraphClass.ShardingConfig = map[string]interface{}{"desiredCount": 1}
-	// Async replication explicitly OFF: SELF_RECOVERY must be the
-	// only path that restores data on the wiped node.
 	paragraphClass.ReplicationConfig = &models.ReplicationConfig{Factor: 3, AsyncEnabled: false}
 	paragraphClass.Vectorizer = "none"
 
-	// Wait for the cluster to form quorum before issuing schema commands
-	// (CreateClass with RF=3 fails with "1 available, 3 requested" until
-	// every node has joined the RAFT FSM).
 	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 		body, err := helper.Client(t).Nodes.NodesGet(nodes.NewNodesGetParams(), nil)
 		require.NoError(ct, err)
@@ -309,8 +270,6 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 
 	helper.CreateClass(t, paragraphClass)
 
-	// Wait for the shard to appear on all nodes before ingesting (avoids
-	// "shard not found" races against the broadcast write path).
 	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 		verbose := verbosity.OutputVerbose
 		body, err := helper.Client(t).Nodes.NodesGetClass(
@@ -332,8 +291,6 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 	}
 	common.CreateObjects(t, compose.GetWeaviate().URI(), batch)
 
-	// Force a RAFT snapshot before wipe so the rejoin goes through
-	// InstallSnapshot. See forceRaftSnapshot for rationale.
 	for i := 0; i < 3; i++ {
 		forceRaftSnapshot(ctx, t, compose, i)
 	}
@@ -342,13 +299,9 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 	common.StartNodeAt(ctx, t, compose, wipedIdx)
 	helper.SetupClient(compose.GetWeaviate().URI())
 
-	// Hit node-1 with consistency=ONE while node-3 is recovering.
-	// Wait until node-3 finishes recovery; throughout, every probe
-	// must succeed.
 	deadline := time.Now().Add(5 * time.Minute)
 	probeCount := 0
 	for time.Now().Before(deadline) {
-		// Spot-check 5 random IDs; should always succeed via the 2 healthy replicas.
 		for _, id := range []strfmt.UUID{ids[0], ids[objCount/4], ids[objCount/2], ids[3*objCount/4], ids[objCount-1]} {
 			exists, err := common.ObjectExistsCL(t, compose.GetWeaviate().URI(), paragraphClass.Class, id, types.ConsistencyLevelOne)
 			require.NoError(t, err, "consistency=ONE probe failed during recovery (probe #%d, id=%s)", probeCount, id)
@@ -356,7 +309,6 @@ func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 		}
 		probeCount++
 
-		// Check if node-3 has finished recovering (op READY).
 		body, err := helper.Client(t).Replication.ListReplication(
 			replication.NewListReplicationParams().WithTargetNode(&wipedNodeName), nil)
 		if err == nil && body != nil && body.Payload != nil {

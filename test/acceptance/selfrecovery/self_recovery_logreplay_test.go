@@ -61,14 +61,8 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 		WithWeaviateCluster(3).
 		WithWeaviateEnv("SELF_RECOVERY_ENABLED", "true").
 		WithWeaviateEnv("SELF_RECOVERY_CONCURRENCY", "2").
-		// Required to expose the /replication/* observability API.
 		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
-		// NOTE: deliberately no RAFT_TRAILING_LOGS override and no forced
-		// snapshot. With defaults the leader keeps the whole (tiny,
-		// schema-only) RAFT log, so a wiped node rejoins by replaying
-		// committed log entries — never InstallSnapshot. This is exactly
-		// the path the older e2e test could not cover.
-		WithWeaviateTmpfsData(). // tmpfs /data so a stop+start truly wipes the dir
+		WithWeaviateTmpfsData().
 		Start(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -81,7 +75,7 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 
 	const (
 		objCount = 500
-		wipedIdx = 2 // container index; node name docker.Weaviate2
+		wipedIdx = 2
 	)
 	wipedNodeName := docker.Weaviate2
 	paragraphClass := articles.ParagraphsClass()
@@ -100,8 +94,6 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 
 	t.Run("create RF=3 single-shard collection and ingest", func(t *testing.T) {
 		paragraphClass.ShardingConfig = map[string]interface{}{"desiredCount": 1}
-		// Async replication OFF: SELF_RECOVERY is then the only path that
-		// can restore the wiped node's data.
 		paragraphClass.ReplicationConfig = &models.ReplicationConfig{Factor: 3, AsyncEnabled: false}
 		paragraphClass.Vectorizer = "none"
 		helper.CreateClass(t, paragraphClass)
@@ -139,10 +131,6 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 		}, 30*time.Second, 1*time.Second, "batch ingest never succeeded")
 	})
 
-	// NEGATIVE: creating a fresh collection on a healthy running cluster is a
-	// runtime create — every replica builds an empty shard folder, so the
-	// load-time "folder missing" signal never appears. No node may register
-	// a SELF_RECOVERY op for it.
 	t.Run("creating a collection on a healthy cluster does not recover", func(t *testing.T) {
 		fresh := articles.ArticlesClass()
 		fresh.ShardingConfig = map[string]interface{}{"desiredCount": 1}
@@ -166,8 +154,6 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 		helper.SetupClient(compose.GetWeaviate().URI())
 	})
 
-	// POSITIVE: the wiped node rejoined via log replay (no snapshot). The
-	// startup DB-load pass must see the missing shard folder and recover it.
 	t.Run("a SELF_RECOVERY op fires for the wiped node", func(t *testing.T) {
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			found, err := hasSelfRecoveryOp(t, wipedNodeName)
@@ -194,13 +180,6 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 			}
 		}, 5*time.Minute, 2*time.Second, "wiped node did not report full object count after recovery")
 	})
-
-	// NOTE: a "plain restart with data intact does not recover" negative
-	// cannot be expressed here: this cluster mounts /data as tmpfs (see
-	// WithWeaviateTmpfsData), so every container stop drops the data — there
-	// is no intact restart. That a node with prior RAFT state is never
-	// treated as a wiped joiner is covered by the unit test
-	// TestWipedJoinerIsCandidate ("prior applied state excluded").
 }
 
 // TestSelfRecoveryViaLogReplayMultiTenant verifies the same log-replay
@@ -298,10 +277,6 @@ func TestSelfRecoveryViaLogReplayMultiTenant(t *testing.T) {
 		}
 	})
 
-	// NEGATIVE: creating and activating tenants on a healthy cluster is a
-	// runtime create — each replica builds the tenant-shard folder, so the
-	// load-time "folder missing" signal never appears. No node may register
-	// a SELF_RECOVERY op for it.
 	t.Run("creating tenants on a healthy cluster does not recover", func(t *testing.T) {
 		for _, node := range []string{docker.Weaviate0, docker.Weaviate1, docker.Weaviate2} {
 			node := node
