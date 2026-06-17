@@ -139,12 +139,8 @@ func startWeaviate(ctx context.Context,
 		exposedPorts = append(exposedPorts, "6060/tcp")
 		waitStrategies = append(waitStrategies, wait.ForListeningPort(debugPort))
 	}
-	// Tmpfs at /data gives the test true wipe semantics: docker stop
-	// unmounts the tmpfs, dropping all writes; docker start gets a fresh
-	// (empty) tmpfs. Used by SELF_RECOVERY acceptance tests where the
-	// rm-while-alive approach lets weaviate's open-fd writes recreate
-	// files between rm and SIGKILL. Opt-in because the default behavior
-	// (writable layer at /data) is what most tests rely on.
+	// Opt-in tmpfs at /data: stop unmounts it (dropping all writes),
+	// start gets a fresh empty one. See Compose.WithWeaviateTmpfsData.
 	var tmpfs map[string]string
 	if tmpfsData {
 		tmpfs = map[string]string{"/data": ""}

@@ -204,12 +204,9 @@ func (c *Copier) localShardName(srcShard, override string) string {
 }
 
 // rewriteRelPathToLocalShard rewrites the shard segment of a
-// source-relative path (e.g. "coll/shard/.../file") to the local
-// destination shard. No-op when srcShard == localShard. Wire-protocol
-// paths from the file-replication gRPC service are slash-separated
-// regardless of the source's OS, so split/join on '/' explicitly
-// rather than filepath.Separator. The caller re-joins with
-// filepath.Join when materialising the result on the local FS.
+// source-relative path (e.g. "coll/shard/.../file") to localShard;
+// no-op when equal. Wire-protocol paths are always slash-separated
+// regardless of source OS, so split/join on '/', not filepath.Separator.
 func (c *Copier) rewriteRelPathToLocalShard(srcRelPath, srcShard, localShard string) string {
 	if localShard == srcShard {
 		return srcRelPath
@@ -227,8 +224,8 @@ func (c *Copier) shardPath(collectionName, shardName string) string {
 }
 
 func (c *Copier) prepareLocalFolder(collectionName, shardName, localShard string, fileNames []string) error {
-	// Keyed by LOCAL relative path so we can compare against on-disk
-	// files (which live under localShard, not srcShard, for SELF_RECOVERY).
+	// Keyed by LOCAL relative path to match on-disk files (under
+	// localShard, not srcShard, for SELF_RECOVERY).
 	fileNamesMap := make(map[string]struct{}, len(fileNames))
 	for _, fileName := range fileNames {
 		fileNamesMap[c.rewriteRelPathToLocalShard(fileName, shardName, localShard)] = struct{}{}
@@ -314,8 +311,7 @@ func (c *Copier) downloadWorker(ctx context.Context, client FileReplicationServi
 	metadataChan <-chan *protocol.FileMetadata, srcShard, localShard string,
 ) error {
 	for meta := range metadataChan {
-		// Rewrite the shard segment so SELF_RECOVERY writes land in
-		// "<shard>.recovering/" rather than the live "<shard>/".
+		// SELF_RECOVERY writes land in "<shard>.recovering/", not live "<shard>/".
 		localFilePath := filepath.Join(c.rootDataPath, c.rewriteRelPathToLocalShard(meta.FileName, srcShard, localShard))
 
 		_, checksum, err := integrity.CRC32(localFilePath)
@@ -475,10 +471,9 @@ func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 	return nil
 }
 
-// dirExists is (true, nil) when path is a directory, (false, nil) on
-// ENOENT, and (false, err) for any other stat failure or when path
-// exists but is not a directory (caller should surface the error
-// rather than silently treat a stray file as a present shard dir).
+// dirExists is (true, nil) for a directory, (false, nil) on ENOENT, and
+// (false, err) otherwise — including a non-dir at path, so a stray file
+// isn't mistaken for a present shard dir.
 func dirExists(path string) (bool, error) {
 	fi, err := os.Stat(path)
 	if err != nil {

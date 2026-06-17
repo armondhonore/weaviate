@@ -26,14 +26,11 @@ func IsShardRecovering(err error) bool {
 	return errors.Is(err, ErrShardRecovering)
 }
 
-// startupDBLoadKey marks a context as originating from the one-shot
-// startup DB-load pass (reloadDBFromSchema -> ReloadLocalDB), which runs
-// after the node has caught its schema up to the cluster — whether that
-// catch-up came from a RAFT snapshot install or from replaying committed
-// log entries. It distinguishes "loading a shard the schema says should
-// already exist" (a SELF_RECOVERY candidate when the on-disk dir is
-// missing) from "creating a brand-new shard at runtime" (where a missing
-// dir is normal).
+// startupDBLoadKey marks a ctx as the one-shot startup DB-load pass
+// (reloadDBFromSchema -> ReloadLocalDB, after schema catch-up via snapshot
+// install or log replay). It distinguishes "load a shard the schema says
+// should exist" (a SELF_RECOVERY candidate when the dir is missing) from
+// "create a brand-new runtime shard" (where a missing dir is normal).
 type startupDBLoadKey struct{}
 
 // WithStartupDBLoad tags the ctx as the startup DB-load pass.

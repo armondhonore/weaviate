@@ -577,10 +577,8 @@ func (d *Compose) WithMCPConfigFile(hostPath, containerPath string) *Compose {
 }
 
 func (d *Compose) WithWeaviateWithDebugPort() *Compose {
-	// Only default to a 1-node cluster when the caller hasn't already
-	// configured a size — otherwise this would silently overwrite e.g.
-	// WithWeaviateCluster(3) and the test would end up with a 1-node
-	// "cluster" that fails RF=3 schema operations.
+	// Default to 1 node only if no size was set; otherwise this would
+	// overwrite e.g. WithWeaviateCluster(3) and break RF=3 operations.
 	if !d.withWeaviateCluster {
 		d.With1NodeCluster()
 	}
@@ -589,12 +587,9 @@ func (d *Compose) WithWeaviateWithDebugPort() *Compose {
 }
 
 // WithWeaviateTmpfsData mounts /data as a tmpfs in every weaviate
-// container. The tmpfs is wiped automatically when the container is
-// stopped (and remounted fresh on next start), giving tests true
-// data-loss semantics — required by SELF_RECOVERY tests because the
-// alternative (rm -rf /data/* via docker exec while weaviate is
-// running) races with weaviate's own writes (open fds + flushes
-// recreate files between rm and SIGKILL).
+// container, wiped on stop and fresh on start. Self-recovery tests need
+// this for true data-loss semantics: rm-while-running races weaviate's
+// open-fd writes, which recreate files between rm and SIGKILL.
 func (d *Compose) WithWeaviateTmpfsData() *Compose {
 	d.withWeaviateTmpfsData = true
 	return d

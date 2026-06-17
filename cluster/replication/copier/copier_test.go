@@ -39,7 +39,6 @@ func TestCopyReplicaFiles(t *testing.T) {
 		return path
 	}
 
-	// remote files
 	remoteFiles := []struct {
 		rel string
 		buf []byte
@@ -52,19 +51,17 @@ func TestCopyReplicaFiles(t *testing.T) {
 		write(remoteTmpDir, f.rel, f.buf)
 	}
 
-	// local unexpected file that must be deleted
+	// unexpected local file that the copy must delete
 	_ = write(localTmpDir, "collection/shard/old", []byte("OLD"))
 
 	mockClient := NewMockFileReplicationServiceClient(t)
 	mockRemoteIndex := types.NewMockRemoteIndex(t)
 
-	// Pause / resume
 	mockClient.EXPECT().PauseFileActivity(mock.Anything, mock.Anything).
 		Return(&protocol.PauseFileActivityResponse{}, nil)
 	mockClient.EXPECT().ResumeFileActivity(mock.Anything, mock.Anything).
 		Return(&protocol.ResumeFileActivityResponse{}, nil)
 
-	// ListFiles
 	fileNames := []string{
 		"collection/shard/fileA",
 		"collection/shard/nested/fileB",
@@ -72,7 +69,6 @@ func TestCopyReplicaFiles(t *testing.T) {
 	mockClient.EXPECT().ListFiles(mock.Anything, mock.Anything).
 		Return(&protocol.ListFilesResponse{FileNames: fileNames}, nil)
 
-	// Metadata calls
 	for _, f := range remoteFiles {
 		st, err := os.Stat(filepath.Join(remoteTmpDir, f.rel))
 		require.NoError(t, err)
@@ -93,7 +89,6 @@ func TestCopyReplicaFiles(t *testing.T) {
 		}, nil)
 	}
 
-	// File download streams
 	for _, f := range remoteFiles {
 		stream := NewMockFileChunkStream(t)
 
@@ -145,12 +140,11 @@ func TestCopyReplicaFiles(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-// TestCopyReplicaFilesToLocalShard_RecoveryOverride mirrors
-// TestCopyReplicaFiles but supplies a localShardOverride (as SELF_RECOVERY
-// does, "<shard>.recovering"): the source still reports files under
-// "<collection>/<shard>/...", but they must land locally under
-// "<collection>/<shard>.recovering/..." — and the live "<collection>/<shard>/"
-// directory must be left untouched.
+// TestCopyReplicaFilesToLocalShard_RecoveryOverride: with a
+// localShardOverride ("<shard>.recovering", as SELF_RECOVERY uses),
+// files reported under "<collection>/<shard>/..." must land under
+// "<collection>/<shard>.recovering/...", leaving the live shard dir
+// untouched.
 func TestCopyReplicaFilesToLocalShard_RecoveryOverride(t *testing.T) {
 	remoteTmpDir := t.TempDir()
 	localTmpDir := t.TempDir()

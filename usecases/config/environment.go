@@ -1028,6 +1028,17 @@ func FromEnv(config *Config) error {
 		return err
 	}
 
+	if v := os.Getenv("SELF_RECOVERY_BARRIER_TIMEOUT"); v != "" {
+		duration, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse SELF_RECOVERY_BARRIER_TIMEOUT as time.Duration: %w", err)
+		}
+		if duration <= 0 {
+			return fmt.Errorf("SELF_RECOVERY_BARRIER_TIMEOUT must be a positive duration")
+		}
+		config.Replication.SelfRecoveryBarrierTimeout = duration
+	}
+
 	if err := parseIntVerify(
 		"ASYNC_REPLICATION_SCHEDULER_WORKERS",
 		DefaultAsyncReplicationSchedulerWorkers,

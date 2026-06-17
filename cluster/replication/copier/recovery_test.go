@@ -98,7 +98,6 @@ func TestPromoteRecoveryFolder(t *testing.T) {
 		info, err := os.Stat(livePath)
 		require.NoError(t, err)
 		require.True(t, info.IsDir())
-		// Marker file survived the rename.
 		_, err = os.Stat(path.Join(livePath, "marker"))
 		require.NoError(t, err)
 

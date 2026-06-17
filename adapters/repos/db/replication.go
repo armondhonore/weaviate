@@ -486,11 +486,9 @@ func (i *Index) IncomingResumeFileActivity(ctx context.Context,
 func (i *Index) IncomingListFiles(ctx context.Context,
 	shardName string,
 ) ([]string, error) {
-	// If we're ourselves recovering this shard, we have no files to
-	// hand out. Return ErrShardRecovering so the caller (a peer's
-	// orchestrator probe) can distinguish "not a usable source right
-	// now" from "shard never existed here" — the former must not
-	// trigger an empty-fallback decision.
+	// If we're recovering this shard ourselves, return ErrShardRecovering
+	// so a peer's probe reads "not a usable source now" rather than "shard
+	// never existed here" — the latter would trigger empty-fallback.
 	if s := i.shards.Load(shardName); s != nil {
 		if rec, ok := s.(*RecoveringShard); ok && rec.IsRecovering() {
 			return nil, fmt.Errorf("incoming list files for shard %s: %w", shardName, enterrors.ErrShardRecovering)

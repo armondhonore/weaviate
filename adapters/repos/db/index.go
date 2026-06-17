@@ -180,8 +180,7 @@ func (m *shardMap) Loaded(name string) ShardLike {
 		return nil
 	}
 
-	// If it's a deferred-load wrapper (lazy or recovering), only return
-	// it once the inner shard is loaded.
+	// Deferred-load wrappers (lazy or recovering): only return once loaded.
 	if l, ok := shard.(loadableShard); ok {
 		if !l.isLoaded() {
 			return nil
@@ -191,9 +190,8 @@ func (m *shardMap) Loaded(name string) ShardLike {
 	return shard
 }
 
-// loadableShard is the small surface implemented by both
-// *LazyLoadShard and *RecoveringShard, used by callers that need to
-// know "is the inner shard materialized?" or "trigger the load".
+// loadableShard is the surface common to *LazyLoadShard and
+// *RecoveringShard: "is the inner shard materialized?" / "trigger the load".
 type loadableShard interface {
 	Load(ctx context.Context) error
 	isLoaded() bool
@@ -524,14 +522,11 @@ func (i *Index) initAndStoreShards(ctx context.Context, class *models.Class,
 		}
 		shardName := shard.name
 
-		// SELF_RECOVERY: if dir is missing and feature is on, hand off
-		// to the orchestrator instead of creating an empty shard. The
-		// RecoveringShard wrapper installed in i.shards is promoted by
-		// the orchestrator (handleEmptyFallback's onRecoveryComplete)
-		// or by the replication consumer (after op READY); the lazy-
-		// load background pass below must NOT enroll it, otherwise
-		// loadLocalShardIfActive would call wrapper.Load and create an
-		// empty live <shard>/ dir mid-copy, dooming the rename.
+		// SELF_RECOVERY: missing dir + feature on → hand off to the
+		// orchestrator instead of creating an empty shard, and skip the
+		// lazy-load pass below: enrolling it would let
+		// loadLocalShardIfActive call wrapper.Load and create an empty
+		// live <shard>/ dir mid-copy, dooming the rename.
 		if i.recoverShardFromPeerIfNeeded(ctx, class, shardName, promMetrics) {
 			continue
 		}
@@ -634,10 +629,10 @@ func (i *Index) loadLocalShardIfActive(shardName string) error {
 		return nil
 	}
 
-	// Defence-in-depth: a recovering shard must only be loaded after
-	// PromoteRecoveryFolder runs (via the orchestrator or consumer).
-	// Calling Load here would clear the block and let the inner
-	// LazyLoadShard.Load materialise an empty <shard>/ dir mid-copy.
+	// Defence-in-depth: never Load a recovering shard here. Calling Load
+	// would clear the block and let LazyLoadShard.Load materialise an
+	// empty <shard>/ dir mid-copy; promotion must go via the orchestrator
+	// or consumer (after PromoteRecoveryFolder).
 	if rec, ok := shard.(*RecoveringShard); ok && rec.IsRecovering() {
 		return nil
 	}
@@ -650,16 +645,13 @@ func (i *Index) loadLocalShardIfActive(shardName string) error {
 }
 
 // recoverShardFromPeerIfNeeded installs a RecoveringShard and submits to
-// the orchestrator when the on-disk dir is missing at startup AND the
+// the orchestrator when the on-disk dir is missing at startup and the
 // SELF_RECOVERY feature is on. Returns true if recovery was kicked off
-// (caller skips normal init); false otherwise (caller proceeds with
-// normal init: empty dir + async-rep backfill). Only the startup path
-// calls this; runtime shard creation is unaffected.
+// (caller skips normal init), false otherwise. Startup path only.
 //
-// The wrapper is installed BEFORE SubmitRecovery so a worker that fires
-// immediately (e.g. empty-fallback) doesn't land LoadLocalShard ahead
-// of the install and get its loaded shard clobbered. If SubmitRecovery
-// declines, the wrapper is reverted and normal init takes over.
+// The wrapper is installed BEFORE SubmitRecovery so an immediately-firing
+// worker (e.g. empty-fallback) can't land LoadLocalShard ahead of the
+// install and clobber its loaded shard. A declined submit reverts it.
 func (i *Index) recoverShardFromPeerIfNeeded(ctx context.Context, class *models.Class,
 	shardName string, promMetrics *monitoring.PrometheusMetrics,
 ) bool {
@@ -681,8 +673,7 @@ func (i *Index) recoverShardFromPeerIfNeeded(ctx context.Context, class *models.
 	// Detach from caller ctx: recovery outlives schema-reload AddClass.
 	orch := i.Config.SelfRecoveryOrchestrator
 	if !orch.SubmitRecovery(context.Background(), collection, shardName, fromBootstrap) {
-		// Queue full / feature flipped off: revert and fall through to
-		// normal init.
+		// Queue full / feature off: revert and fall through to normal init.
 		i.shards.LoadAndDelete(shardName)
 		i.logger.WithFields(logFields).
 			Warn("self-recovery: submission was not queued (queue full or feature disabled); falling back to normal shard init")
@@ -713,9 +704,8 @@ func (i *Index) shouldRecoverShardFromPeer(ctx context.Context, shardName string
 	if _, err := os.Stat(dir); err == nil {
 		return false // dir exists; normal init owns it
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		// EACCES, EIO, ELOOP, etc. Falling back to normal init is the
-		// safe default, but a silent skip makes startup failures
-		// hard to diagnose — surface the underlying FS error.
+		// EACCES/EIO/etc.: fall back to normal init, but surface the
+		// FS error so the startup skip isn't silent.
 		i.logger.WithError(err).WithFields(logFields).
 			Warn("self-recovery: stat on shard dir failed; falling back to normal shard init")
 		return false
@@ -1112,13 +1102,10 @@ type IndexConfig struct {
 	// SELF_RECOVERY copy from a healthy peer. Nil-safe.
 	SelfRecoveryOrchestrator SelfRecoveryOrchestrator
 	// RaftBootstrapComplete reports whether RAFT has finished its initial
-	// FSM replay. recoverShardFromPeerIfNeeded reads it when it submits a
-	// SELF_RECOVERY op (passing !RaftBootstrapComplete() as fromBootstrap)
-	// so the orchestrator can treat an all-peers-empty result during the
-	// bootstrap window as a likely fresh-class-added-during-downtime case
-	// rather than a catastrophic wipe. Captured at submit time to avoid a
-	// race with MarkRaftBootstrapComplete. Nil-safe: when nil, recoveries
-	// are treated as post-bootstrap.
+	// FSM replay. Read (and captured) at submit time as the fromBootstrap
+	// tag, letting the orchestrator treat an all-peers-empty result during
+	// the bootstrap window as a likely class-added-during-downtime rather
+	// than a wipe. Nil-safe: nil ⇒ treated as post-bootstrap.
 	RaftBootstrapComplete func() bool
 
 	HFreshEnabled bool

@@ -24,21 +24,17 @@ import (
 	"github.com/weaviate/weaviate/usecases/monitoring"
 )
 
-// RecoveringShard wraps a LazyLoadShard for SELF_RECOVERY. Until the
-// shard is promoted (via Load, called by the consumer's LoadLocalShard
-// or by the orchestrator's empty-fallback), GetStatus reports RECOVERING
-// and the inner Load is blocked with enterrors.ErrShardRecovering — so a
-// lazy load doesn't silently MkdirAll an empty shard before the
-// copy-and-rename completes. Cluster-wide routing exclusion is handled
-// separately by the replication FSM read filter; this wrapper is local
-// defense-in-depth.
+// RecoveringShard wraps a LazyLoadShard for SELF_RECOVERY. Until promoted
+// via Load (by the consumer's LoadLocalShard or the orchestrator's
+// empty-fallback), inner Load is blocked with ErrShardRecovering so a lazy
+// load can't MkdirAll an empty shard before the copy-and-rename completes,
+// and GetStatus reports RECOVERING. This is local defense-in-depth; the
+// replication FSM read filter handles cluster-wide routing exclusion.
 //
-// IMPORTANT: while blocked, any data-path method inherited from
-// LazyLoadShard that goes through mustLoad/mustLoadCtx (Store, NotifyReady,
-// Counter, the put*/delete*/update* internals, etc.) will PANIC rather
-// than return cleanly — reaching one of those is a routing bug. Callers
-// that iterate shards during the recovery window must skip recovering
-// shards (use the "loaded" shard accessors, or IsRecovering()). See
+// IMPORTANT: while blocked, any inherited data-path method going through
+// mustLoad/mustLoadCtx (Store, NotifyReady, put*/delete*/... internals)
+// PANICS by design — reaching one is a routing bug. Iterating callers must
+// skip recovering shards (loaded accessors, or IsRecovering()). See
 // docs/self-recovery.md ("Limitations").
 type RecoveringShard struct {
 	*LazyLoadShard
@@ -57,9 +53,8 @@ func NewRecoveringShard(ctx context.Context, promMetrics *monitoring.PrometheusM
 	return &RecoveringShard{LazyLoadShard: inner}
 }
 
-// Load shadows LazyLoadShard.Load: clears the load block and triggers
-// the inner load. After it returns nil the wrapper transitions to
-// behaving like a normal LazyLoadShard.
+// Load shadows LazyLoadShard.Load: clears the block, then loads. After it
+// returns nil the wrapper behaves like a normal LazyLoadShard.
 func (r *RecoveringShard) Load(ctx context.Context) error {
 	r.clearLoadBlock()
 	return r.LazyLoadShard.Load(ctx)

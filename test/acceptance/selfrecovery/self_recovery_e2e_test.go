@@ -34,15 +34,11 @@ import (
 	"github.com/weaviate/weaviate/test/helper/sample-schema/articles"
 )
 
-// forceRaftSnapshot POSTs to the node-local /debug/raft/snapshot
-// endpoint, which calls raft.Snapshot() synchronously. Used by the
-// e2e tests to guarantee a snapshot exists before wiping a peer, so
-// the wiped node's rejoin goes through InstallSnapshot → Restore →
-// reloadDBFromSchema → the SELF_RECOVERY hook.
-//
-// Requires WithWeaviateWithDebugPort() on the compose builder —
-// /debug/* routes are served on port 6060 (the profiling port), not
-// on the main API port.
+// forceRaftSnapshot POSTs /debug/raft/snapshot (synchronous
+// raft.Snapshot()) to guarantee a snapshot before wiping a peer, so the
+// rejoin goes through InstallSnapshot → Restore → reloadDBFromSchema →
+// the SELF_RECOVERY hook. Requires WithWeaviateWithDebugPort() — /debug/*
+// is served on the profiling port, not the main API port.
 func forceRaftSnapshot(ctx context.Context, t *testing.T, compose *docker.DockerCompose, idx int) {
 	t.Helper()
 	c, err := compose.ContainerAt(idx)
@@ -78,20 +74,14 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 		// Required to expose the /replication/* observability API
 		// (without it, list/details endpoints return 501).
 		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
-		// This test deterministically exercises the snapshot/Restore
-		// rejoin path (the log-replay rejoin path is covered by
-		// self_recovery_logreplay_test.go). Trim trailing logs so the
-		// leader sends InstallSnapshot to a far-behind joiner; the
-		// test then POSTs /debug/raft/snapshot before wipe to
-		// guarantee a snapshot exists rather than relying on the
-		// default RAFT_SNAPSHOT_THRESHOLD being crossed.
+		// Pins the snapshot/Restore rejoin path (log-replay rejoin is
+		// covered by self_recovery_logreplay_test.go): trimming trailing
+		// logs forces the leader to InstallSnapshot a far-behind joiner,
+		// and the test POSTs /debug/raft/snapshot before wipe so a
+		// snapshot is guaranteed regardless of RAFT_SNAPSHOT_THRESHOLD.
 		WithWeaviateEnv("RAFT_TRAILING_LOGS", "1").
 		WithWeaviateWithDebugPort(). // /debug/raft/snapshot lives on the profiling port
-		// Tmpfs at /data so WipeNodeDataAt's stop+start really
-		// empties the data dir (rm -rf via docker exec races with
-		// weaviate's own writes; tmpfs is auto-wiped on container
-		// stop).
-		WithWeaviateTmpfsData().
+		WithWeaviateTmpfsData().     // so WipeNodeDataAt's stop+start truly empties /data
 		Start(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -181,10 +171,9 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	})
 
 	t.Run("verify all 3 nodes report shard loaded", func(t *testing.T) {
-		// Note: ObjectCount in /nodes is async-updated and unreliable
-		// for immediate post-ingest assertions. Loaded=true is the
-		// signal we care about pre-wipe; full-count verification
-		// happens post-recovery via the recovery_completes subtest.
+		// ObjectCount in /nodes is async-updated, unreliable right after
+		// ingest; Loaded=true is the pre-wipe signal. Full-count check is
+		// post-recovery (recovery_completes subtest).
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			verbose := verbosity.OutputVerbose
 			body, err := helper.Client(t).Nodes.NodesGetClass(
@@ -200,10 +189,8 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	})
 
 	t.Run("force a RAFT snapshot before wipe", func(t *testing.T) {
-		// Self-recovery only fires from the snapshot-Restore path
-		// (see docs/self-recovery.md "Limitations"). Force a
-		// snapshot on every node so the wiped node's rejoin
-		// receives InstallSnapshot (not log replay) deterministically.
+		// Snapshot every node so the wiped node's rejoin deterministically
+		// receives InstallSnapshot rather than log replay.
 		for i := 0; i < 3; i++ {
 			forceRaftSnapshot(ctx, t, compose, i)
 		}
@@ -216,13 +203,9 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 		helper.SetupClient(compose.GetWeaviate().URI())
 	})
 
-	// With async replication disabled on the class, the only path
-	// that can restore data on the wiped node is SELF_RECOVERY.
-
 	t.Run("a SELF_RECOVERY op was registered for node-3", func(t *testing.T) {
-		// Asserts the recovery actually went through the SELF_RECOVERY
-		// path (not silent async-rep backfill, which is disabled on
-		// the class anyway).
+		// Proves recovery went through SELF_RECOVERY, not silent async-rep
+		// backfill (disabled on the class).
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 			body, err := helper.Client(t).Replication.ListReplication(
 				replication.NewListReplicationParams().WithTargetNode(&wipedNodeName), nil)

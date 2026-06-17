@@ -62,12 +62,9 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 	// harness does not currently expose. Metric registration is
 	// covered by the unit test in cluster/replication/selfrecovery.
 
-	// accept-empty debug endpoint is reachable. We probe with a
-	// non-existent (collection, shard) and verify the endpoint responds
-	// with a 404 from the schema gate. Validates the handler is
-	// registered AND that the schema-error → 404 mapping is in place
-	// (rather than the generic 500 the handler used to return for
-	// validation failures).
+	// Probing accept-empty with an unknown shard checks both that the
+	// handler is registered and that the schema gate maps the error to
+	// 404 (not the generic 500 the handler used to return).
 	t.Run("accept_empty_endpoint_is_reachable", func(t *testing.T) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"http://"+debugURI+"/debug/self-recovery/accept-empty?collection=NoSuchClass&shard=NoSuchShard", nil)

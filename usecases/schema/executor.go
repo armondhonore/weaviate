@@ -63,10 +63,8 @@ func (e *executor) ReloadLocalDB(ctx context.Context, all []api.UpdateClassReque
 	cs := make([]*models.Class, len(all))
 
 	// Tag the ctx so the SELF_RECOVERY hook (downstream in
-	// migrator.AddClass → initAndStoreShards) knows this AddClass is part
-	// of the startup DB-load pass for a pre-existing class, not a
-	// brand-new one. This pass runs regardless of whether the node caught
-	// its schema up via a RAFT snapshot install or via log replay.
+	// migrator.AddClass → initAndStoreShards) treats these AddClass calls
+	// as the startup DB-load of pre-existing classes, not brand-new ones.
 	ctx = enterrors.WithStartupDBLoad(ctx)
 	g, ctx := enterrors.NewErrorGroupWithContextWrapper(e.logger, ctx)
 	g.SetLimit(_NUMCPU * 2)

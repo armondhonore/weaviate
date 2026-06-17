@@ -141,29 +141,23 @@ func (db *DB) SetUsageLimits(m *usagelimits.Manager) {
 // SelfRecoveryOrchestrator is the narrow surface used by the db package
 // to avoid an import cycle on cluster/replication.
 type SelfRecoveryOrchestrator interface {
-	// Enabled reports whether the SELF_RECOVERY feature flag is on.
-	// Callers must check this before installing a RecoveringShard
-	// wrapper; otherwise the wrapper would block load forever
-	// (SubmitRecovery returns false when the flag is off).
+	// Enabled reports whether the SELF_RECOVERY feature flag is on. Must
+	// be checked before installing a RecoveringShard wrapper, else it
+	// blocks load forever (SubmitRecovery returns false when off).
 	Enabled() bool
-	// HasInflightReplicationOp reports whether a non-terminal replication
-	// op (COPY, MOVE, or SELF_RECOVERY) already targets (collection, shard)
-	// on this node. The startup hook calls this before installing a
-	// RecoveringShard wrapper so it does not race a resumed scale-out
-	// consumer writing into the same shard directory. On error the caller
-	// should skip recovery (conservative).
+	// HasInflightReplicationOp reports whether a non-terminal COPY/MOVE/
+	// SELF_RECOVERY op already targets (collection, shard) here. Checked
+	// before installing a wrapper so we don't race a resumed scale-out
+	// consumer on the same dir. Skip recovery on error (conservative).
 	HasInflightReplicationOp(ctx context.Context, collection, shard string) (bool, error)
-	// SubmitRecovery is non-blocking. Returns false when the work was not
-	// queued — feature off, maintenance mode on, or the in-flight queue is
-	// full — in which case the caller MUST fall back to normal shard init
-	// (otherwise a RecoveringShard wrapper would stay load-blocked until
-	// the next restart). fromBootstrap tags the op so an empty-fallback
-	// during the RAFT bootstrap window is logged/counted less alarmingly.
+	// SubmitRecovery is non-blocking. Returns false when not queued
+	// (feature off, maintenance mode, or queue full); the caller MUST
+	// then fall back to normal init, else the wrapper stays load-blocked
+	// until restart. fromBootstrap tags the op for quieter empty-fallback
+	// logging during the RAFT bootstrap window.
 	SubmitRecovery(ctx context.Context, collection, shard string, fromBootstrap bool) bool
-	// Close stops accepting new submissions, cancels in-flight workers
-	// via a shutdown ctx, and waits for them to drain — bounded by the
-	// caller's ctx. Returns ctx.Err() on deadline. Idempotent. Called
-	// from DB.Shutdown.
+	// Close stops new submissions and drains in-flight workers, bounded by
+	// ctx (returns ctx.Err() on deadline). Idempotent. Called from Shutdown.
 	Close(ctx context.Context) error
 }
 
@@ -221,12 +215,9 @@ func (db *DB) WaitForStartup(ctx context.Context) error {
 
 func (db *DB) StartupComplete() bool { return db.startupComplete.Load() }
 
-// MarkRaftBootstrapComplete is called once RAFT has finished its initial
-// log/snapshot replay. The SELF_RECOVERY startup hook reads this (via
-// IndexConfig.RaftBootstrapComplete) when it submits a recovery: an
-// all-peers-empty result during the bootstrap window most likely means a
-// class was added during this node's downtime, not data loss, so it is
-// logged and counted less alarmingly than a post-bootstrap one.
+// MarkRaftBootstrapComplete records that RAFT has finished its initial
+// log/snapshot replay; see IndexConfig.RaftBootstrapComplete for how the
+// SELF_RECOVERY hook uses it.
 func (db *DB) MarkRaftBootstrapComplete() { db.raftBootstrapComplete.Store(true) }
 
 // RaftBootstrapComplete reports whether the FSM replay window has ended.
@@ -528,11 +519,9 @@ func (db *DB) DeleteIndex(className schema.ClassName) error {
 
 func (db *DB) Shutdown(ctx context.Context) error {
 	db.shutdown <- struct{}{}
-	// Stop the self-recovery worker pool before tearing indexes down so
-	// in-flight LoadLocalShard callbacks complete cleanly (rather than
-	// racing each Index.Shutdown closeLock). The orchestrator's Close
-	// respects ctx.Done so DB.Shutdown's caller-provided deadline bounds
-	// how long we wait for workers to drain.
+	// Stop self-recovery workers before tearing indexes down, so in-flight
+	// LoadLocalShard callbacks finish rather than race each Index.Shutdown
+	// closeLock. Close honours ctx, so the caller's deadline bounds the wait.
 	if db.selfRecoveryOrchestrator != nil {
 		if err := db.selfRecoveryOrchestrator.Close(ctx); err != nil {
 			db.logger.WithError(err).Warn("self-recovery: Close did not drain in time; workers may still be running")

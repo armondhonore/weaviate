@@ -23,9 +23,8 @@ import (
 )
 
 // validShardOrCollection rejects values that could escape the data root
-// when concatenated into a path (orchestrator builds <root>/<class>/<shard>).
-// The schema already restricts class/shard names to a safe charset; this
-// is defense in depth on the operator-facing endpoints.
+// when joined into <root>/<class>/<shard>. Defense-in-depth on the
+// operator endpoints; the schema already restricts names to a safe charset.
 func validShardOrCollection(name string) error {
 	if name == "" {
 		return errors.New("must not be empty")
@@ -110,10 +109,8 @@ func setupSelfRecoveryHandlers(appState *state.State, orch *selfrecovery.Orchest
 			http.Error(w, "self-recovery is not configured on this node", http.StatusServiceUnavailable)
 			return
 		}
-		// WithoutCancel: Restart re-submits the recovery using the
-		// passed ctx; if we used r.Context() the resubmit would be
-		// canceled the moment the handler returned. Values (tracing)
-		// are still inherited.
+		// WithoutCancel: the resubmit outlives the handler; r.Context()
+		// would cancel it on return. Values (tracing) still inherited.
 		if err := orch.RestartRecovery(context.WithoutCancel(r.Context()), collection, shard); err != nil {
 			logger.WithError(err).WithField("collection", collection).WithField("shard", shard).
 				Error("self-recovery restart failed")

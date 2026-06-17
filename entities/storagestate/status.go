@@ -24,10 +24,8 @@ const (
 	StatusReady       Status = "READY"
 	StatusShutdown    Status = "SHUTDOWN"
 	// StatusRecovering: local data is being re-hydrated from a peer
-	// (SELF_RECOVERY). Cluster reads/writes are filtered to other
-	// replicas via the replication FSM; non-routed data-path access
-	// via LazyLoadShard.mustLoad panics by design. See RecoveringShard
-	// and docs/self-recovery.md ("Limitations").
+	// (SELF_RECOVERY); reads/writes are routed to other replicas. See
+	// RecoveringShard and docs/self-recovery.md.
 	StatusRecovering Status = "RECOVERING"
 )
 

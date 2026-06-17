@@ -302,8 +302,8 @@ func TestProbeAndDecide_NoOtherReplicas(t *testing.T) {
 	require.Equal(t, actionEmptyFallback, dec.action)
 }
 
-// TestEmptyFallback_CreatesDir verifies that the empty-fallback path
-// actually creates the live shard directory.
+// TestEmptyFallback_CreatesDir: the empty-fallback path creates the
+// live shard directory.
 func TestEmptyFallback_CreatesDir(t *testing.T) {
 	tmp := t.TempDir()
 	o := newOrchestratorForTest(t, &stubRaft{}, stubSchema{}, &stubNodeSelector{}, nil, stubPathResolver{root: tmp})

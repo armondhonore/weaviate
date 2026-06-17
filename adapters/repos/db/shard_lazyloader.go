@@ -116,12 +116,10 @@ func (l *LazyLoadShard) mustLoad() {
 
 func (l *LazyLoadShard) mustLoadCtx(ctx context.Context) {
 	if err := l.Load(ctx); err != nil {
-		// A blocked load means this is a RecoveringShard whose data is
-		// still being copied from a peer. Reaching a mustLoad-backed
-		// method on it is a routing bug (the caller should have skipped
-		// it via Loaded()/IsRecovering() or the replication FSM read
-		// filter); make the crash unambiguous in logs. See
-		// docs/self-recovery.md ("Limitations").
+		// Blocked load = RecoveringShard still copying from a peer.
+		// Reaching a mustLoad-backed method is a routing bug (caller
+		// should have skipped via Loaded()/IsRecovering() or the FSM read
+		// filter); panic explicitly. See docs/self-recovery.md.
 		if enterrors.IsShardRecovering(err) {
 			panic(fmt.Sprintf("shard %q is recovering from a peer; this code path must not touch a recovering shard: %v",
 				l.shardOpts.name, err))

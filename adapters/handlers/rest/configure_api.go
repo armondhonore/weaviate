@@ -663,6 +663,8 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		MetadataOnlyVoters:              appState.ServerConfig.Config.Raft.MetadataOnlyVoters,
 		EnableOneNodeRecovery:           appState.ServerConfig.Config.Raft.EnableOneNodeRecovery,
 		ForceOneNodeRecovery:            appState.ServerConfig.Config.Raft.ForceOneNodeRecovery,
+		SelfRecoveryEnabled:             appState.ServerConfig.Config.Replication.SelfRecoveryEnabled,
+		WipedJoinerBarrierTimeout:       appState.ServerConfig.Config.Replication.SelfRecoveryBarrierTimeout,
 		DB:                              nil,
 		Parser:                          schemaParser,
 		NodeNameToPortMap:               server2port,
@@ -696,9 +698,6 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 
 	// Wired after Cluster (Raft dep) and before WaitForStartup so the
 	// schema-replay shard-init pass can hand off missing-on-disk shards.
-	// (The bootstrap-window classification of empty-fallbacks is captured
-	// per-op at submit time from IndexConfig.RaftBootstrapComplete, so the
-	// orchestrator itself doesn't need that hook.)
 	selfRecoveryOrch := selfrecovery.New(selfrecovery.Config{
 		Raft:                   appState.ClusterService.Raft,
 		Schema:                 selfRecoverySchemaReader{r: appState.ClusterService.SchemaReader()},
@@ -719,9 +718,8 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		Logger: appState.Logger,
 	})
 	appState.DB.SetSelfRecoveryOrchestrator(selfRecoveryOrch)
-	// The operator/debug HTTP endpoints (and the test-only force-snapshot
-	// endpoint) only make sense when the feature is on; don't expose them
-	// — even on the profiling port — when it's off.
+	// Only expose the debug endpoints (incl. test-only force-snapshot)
+	// when the feature is on — not even on the profiling port otherwise.
 	if appState.ServerConfig.Config.Replication.SelfRecoveryEnabled {
 		setupSelfRecoveryHandlers(appState, selfRecoveryOrch)
 		setupRaftDebugHandlers(appState, appState.ClusterService.Raft)

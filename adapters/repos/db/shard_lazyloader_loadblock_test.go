@@ -21,14 +21,13 @@ import (
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 )
 
-// TestLazyLoadShardLoadBlock verifies the loadBlocked mechanism that
-// RecoveringShard relies on to keep the inner Load from materialising
-// an empty shard from a missing on-disk directory.
+// TestLazyLoadShardLoadBlock covers the loadBlocked guard that
+// RecoveringShard uses to stop the inner Load from materialising an
+// empty shard from a missing on-disk dir.
 //
-// We deliberately do NOT construct a full Shard / Index / metrics here:
-// the loadBlocked path is the very first guard inside Load and short-
-// circuits before any of the heavier scaffolding is touched. So a
-// hand-built LazyLoadShard with the relevant fields set is enough.
+// No full Shard/Index/metrics scaffolding is built: loadBlocked is the
+// first guard inside Load and short-circuits before any of it is
+// touched, so a hand-built LazyLoadShard suffices.
 func TestLazyLoadShardLoadBlock(t *testing.T) {
 	t.Run("blockLoad makes Load return the supplied error", func(t *testing.T) {
 		l := &LazyLoadShard{}
@@ -49,21 +48,14 @@ func TestLazyLoadShardLoadBlock(t *testing.T) {
 	})
 
 	t.Run("clearLoadBlock allows Load to proceed past the guard", func(t *testing.T) {
-		// Once cleared, the loadBlocked guard no longer short-circuits.
-		// Load will attempt to construct the inner shard; with our nil
-		// scaffolding it will fail downstream — but it must NOT return
-		// ErrShardRecovering anymore.
 		l := &LazyLoadShard{}
 		l.blockLoad(enterrors.ErrShardRecovering)
 		l.clearLoadBlock()
 
-		// Load is expected to fail (nil opts) but not with our sentinel.
-		// We only care that the loadBlocked branch was bypassed.
-		defer func() {
-			// NewShard panics on nil opts; we catch it to assert that
-			// the loadBlocked guard was not the one returning early.
-			_ = recover()
-		}()
+		// With the block cleared, Load proceeds into NewShard, which
+		// panics on nil opts. Recovering that panic proves the
+		// loadBlocked guard no longer short-circuits.
+		defer func() { _ = recover() }()
 		_ = l.Load(context.Background())
 	})
 

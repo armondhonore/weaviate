@@ -91,11 +91,9 @@ func (fps *FileReplicationService) ListFiles(ctx context.Context, req *pb.ListFi
 
 	index := fps.repo.GetIndexForIncomingSharding(schema.ClassName(indexName))
 	if index == nil {
-		// Treat as transient: a nil index can mean the schema-replay
-		// hasn't reached this peer yet (eventual consistency), not just
-		// "this collection truly doesn't exist". NotFound would tell a
-		// self-recovery probe "definitive empty" and could push the
-		// orchestrator into the catastrophic-wipe empty-fallback path.
+		// Unavailable, not NotFound: a nil index may just mean schema-replay
+		// hasn't reached this peer yet. NotFound would read as "definitive
+		// empty" to a self-recovery probe and risk the empty-fallback path.
 		return nil, status.Errorf(codes.Unavailable, "local index %q not loaded yet", indexName)
 	}
 
@@ -191,12 +189,10 @@ func (fps *FileReplicationService) GetFile(req *pb.GetFileRequest, stream pb.Fil
 	}
 }
 
-// isShardAbsent reports whether err signals that the requested shard
-// does not exist on this node (vs. a transient/availability issue).
-// Match only shard-specific phrasings — the index layer's canonical
-// errors are "shard not found" / "shard is nil". A bare "not found"
-// substring would misclassify unrelated failures (missing file inside
-// an existing shard etc.) as shard-absence.
+// isShardAbsent reports whether err means the shard doesn't exist here
+// (vs. a transient issue). Matches only the index layer's shard-specific
+// phrasings; a bare "not found" would misclassify unrelated failures
+// (e.g. a missing file within an existing shard) as shard-absence.
 func isShardAbsent(err error) bool {
 	if err == nil {
 		return false

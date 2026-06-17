@@ -15,6 +15,7 @@ Set on every node:
 ```
 SELF_RECOVERY_ENABLED=true
 SELF_RECOVERY_CONCURRENCY=10    # default; per-node parallelism
+SELF_RECOVERY_BARRIER_TIMEOUT=3m  # default; wiped-joiner no-progress fallback window (see "How the trigger is scoped")
 REPLICA_MOVEMENT_ENABLED=true                  # required for /replication/* observability
 ```
 
@@ -141,13 +142,31 @@ regardless of *how* the node caught up: a RAFT snapshot install and a
 replay of committed log entries both converge on the same load pass, and
 a shard folder found missing during it triggers recovery either way.
 
-A wiped node rejoining via log replay replays its schema catch-up
-"schema-only" (no per-entry DB writes, so no shard folders are created
-mid-catch-up — see `Store.noteWipedJoinerProgress`); a watcher
-(`Store.watchWipedJoinerCatchUp`) then waits for the node to reach the
-catch-up target and runs the single load pass. A node with intact data,
-a fresh bootstrap, and a snapshot-restored node are all distinguished
-from a wiped log-replay joiner and are unaffected.
+### Wiped-node log-replay rejoin (no operator-forced snapshot)
+
+A node that comes up with **no local RAFT state** and the feature enabled is
+treated as a *wiped-joiner candidate* (`Store.wipedJoinerCandidate`): it does
+**not** report ready eagerly, and Apply forces every replayed entry
+"schema-only" so no shard folders are created mid-catch-up. When the node joins
+an existing cluster, the leader returns its committed index at join in
+`JoinPeerResponse.leader_commit_index` — the **catch-up barrier**: every
+pre-existing class's `ADD_CLASS` has an index at or below it. `Store.SetJoinBarrier`
+records it, and once Apply has applied up to the barrier it runs the single load
+pass (`finishWipedJoinerReload`, on the Apply thread) — which re-hydrates any
+missing shard from a peer instead of materialising it empty. This covers the
+log-replay rejoin path **without** an operator-forced snapshot; the
+`POST /debug/raft/snapshot` step is now only a test convenience for forcing the
+InstallSnapshot path deterministically.
+
+`Store.watchWipedJoiner` handles the cases the barrier doesn't: a node that
+**formed a fresh cluster** (no barrier — nothing to recover) loads once it has
+caught up to the tiny committed index, and a joiner that can't reach its barrier
+(an older leader that supplied no index, or an unreachable cluster) falls back to
+an eager load after a no-progress timeout. A node with intact data, a feature-off
+node, and a metadata-only voter keep the legacy eager-ready behaviour. The whole
+mechanism is gated on `SELF_RECOVERY_ENABLED`; off ⇒ startup is unchanged. An
+older leader (pre-`leader_commit_index`) returns 0, so a new joiner falls back to
+the legacy path — recovery on log-replay rejoin engages once both ends are upgraded.
 
 Runtime collection/tenant creation is **not** part of the load pass: a
 genuinely new shard has its folder created at creation time, so it is
@@ -155,17 +174,15 @@ never mistaken for a wiped one and never triggers recovery.
 
 ## Limitations
 
-Two narrow edges of the log-replay path remain, both degrading to
-today's behavior (empty shard, backfilled by async replication) rather
-than to data loss:
-
-- If the cluster's *entire* committed RAFT log is a single command, a
-  wiped joiner has no earlier entry to reveal the catch-up backlog and
-  treats that command as a live one.
-- If the catch-up backlog is delivered across multiple `AppendEntries`
-  rounds with a gap exactly at the load-pass boundary, a class in a
-  later round can be created with an empty folder. For a schema-only
-  RAFT log the backlog is tiny and ships in one round, so this is rare.
+**Per-shard recovery requires the whole index/data to be missing, not just one
+shard folder.** Recovery fires only when a shard is *first built* during the
+tagged startup load pass. On a wiped node (whole data dir gone) every shard is
+first built there, so each missing one recovers. But on an **otherwise-intact
+node** where a single shard folder was deleted, `DB.Open` (which runs before the
+tagged pass) rebuilds that shard **empty** from the sharding state first, so the
+tagged pass then sees the dir present and skips it — the shard comes up empty
+rather than recovering. Recovering a single lost shard on an intact node is not
+supported; the supported recovery unit is a wiped data dir.
 
 There is also a brief window during a wiped node's log-replay catch-up
 where the node reports `Ready` but its local DB is not yet built (it is
