@@ -76,6 +76,15 @@ func TestRewriteRelPathToLocalShard(t *testing.T) {
 	}
 }
 
+// TestValidateLocalFolder_MissingBasePath: a missing destination dir (an
+// empty-manifest source shard never created it) must validate as a no-op,
+// not fail the recovery.
+func TestValidateLocalFolder_MissingBasePath(t *testing.T) {
+	root := t.TempDir()
+	c := &Copier{rootDataPath: root, logger: logrus.New()}
+	require.NoError(t, c.validateLocalFolder("MyClass", "shard1", api.RecoveryFolderName("shard1"), nil))
+}
+
 // TestPromoteRecoveryFolder verifies the rename + parent fsync path and
 // the idempotent variants the recovery flow relies on across crashes.
 func TestPromoteRecoveryFolder(t *testing.T) {

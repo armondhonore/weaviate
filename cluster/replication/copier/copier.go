@@ -429,8 +429,9 @@ func (c *Copier) LoadLocalShard(ctx context.Context, collectionName, shardName s
 // "<shard>/" after a SELF_RECOVERY copy completes. Idempotent across
 // crashes: if the live dir already exists the recovery dir (if any) is
 // erased and the call is a no-op; if both dirs are missing it errors.
-// On rename/fsync error the recovery dir is left in place so the next
-// attempt resumes via CRC32 per-file logic.
+// On a rename error the recovery dir is left in place so the next attempt
+// resumes via the CRC32 per-file logic. If fsync fails after a successful
+// rename, the live dir already exists and the next call is a no-op.
 func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 	recoveryPath := c.shardPath(collectionName, api.RecoveryFolderName(shardName))
 	livePath := c.shardPath(collectionName, shardName)
@@ -501,6 +502,11 @@ func (c *Copier) validateLocalFolder(collectionName, shardName, localShard strin
 
 	err := filepath.WalkDir(basePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// Missing basePath = no local files = no orphans to flag (e.g. an
+			// empty-manifest source shard never created the dir); treat as valid.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return fmt.Errorf("validating local folder: %w", err)
 		}
 
