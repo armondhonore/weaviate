@@ -118,8 +118,8 @@ function main() {
               "--acceptance-compaction | -ac"\
               "--acceptance-recovery | -ar"\
               "--acceptance-self-recovery | -asr"\
-              "--only-acceptance-{packageName}"
-              "--only-module-{moduleName}"
+              "--only-acceptance-{packageName}"\
+              "--only-module-{moduleName}"\
               "--benchmark-only | -b" \
               "--help | -h"; exit 1;;
           *) echo "Unknown parameter passed: $1"; exit 1 ;;
