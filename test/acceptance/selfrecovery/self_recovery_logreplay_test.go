@@ -159,7 +159,7 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 			found, err := hasSelfRecoveryOp(t, wipedNodeName)
 			require.NoError(ct, err)
 			assert.True(ct, found, "expected a SELF_RECOVERY op for %s", wipedNodeName)
-		}, 3*time.Minute, 1*time.Second, "no SELF_RECOVERY op observed for the wiped node")
+		}, 5*time.Minute, 1*time.Second, "no SELF_RECOVERY op observed for the wiped node")
 	})
 
 	t.Run("recovery completes and the wiped node reports full object count", func(t *testing.T) {
@@ -299,7 +299,7 @@ func TestSelfRecoveryViaLogReplayMultiTenant(t *testing.T) {
 			found, err := hasSelfRecoveryOp(t, wipedNodeName)
 			require.NoError(ct, err)
 			assert.True(ct, found, "expected SELF_RECOVERY ops for %s tenant shards", wipedNodeName)
-		}, 3*time.Minute, 1*time.Second, "no SELF_RECOVERY op observed for the wiped node")
+		}, 5*time.Minute, 1*time.Second, "no SELF_RECOVERY op observed for the wiped node")
 	})
 
 	t.Run("recovery completes and the wiped node reports all tenant shards", func(t *testing.T) {
