@@ -835,7 +835,7 @@ func (st *Store) wipedJoinerBarrierTimeout() time.Duration {
 // fresh-cluster node (no barrier → nothing to recover) and a joiner making no
 // apply progress toward its barrier before the timeout (e.g. leader unreachable
 // → legacy eager load). Exits once the barrier path (or a racing snapshot
-// Restore) has reloaded, or on Close (st.open flips false).
+// Restore) has reloaded, or on Close (open flips back to false post-startup).
 func (st *Store) watchWipedJoiner() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
@@ -843,8 +843,17 @@ func (st *Store) watchWipedJoiner() {
 	timeout := st.wipedJoinerBarrierTimeout()
 	var lastApplied uint64
 	var stableSince time.Time
+	// open flips true only when Open() returns, just after this goroutine is
+	// spawned; treat open=false as shutdown only after seeing it true, so an early
+	// tick mid-Open() can't exit and disable the fallbacks below.
+	opened := false
 	for range t.C {
-		if st.wipedJoinerReloaded.Load() || !st.open.Load() {
+		if st.wipedJoinerReloaded.Load() {
+			return
+		}
+		if st.open.Load() {
+			opened = true
+		} else if opened {
 			return
 		}
 
