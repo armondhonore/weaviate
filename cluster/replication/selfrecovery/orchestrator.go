@@ -1027,9 +1027,18 @@ func (o *Orchestrator) initPool() {
 	if capacity <= 0 {
 		capacity = defaultSubmitQueueCapacity
 	}
+	// Under closeMu (which Close also holds to read workQueue/Wait on workerWg)
+	// so a Close racing the first Submit can't data-race these writes; bail if
+	// Close already won, since the pool would never be drained or closed.
+	o.closeMu.Lock()
+	if o.closed.Load() {
+		o.closeMu.Unlock()
+		return
+	}
 	o.workQueue = make(chan submission, capacity)
+	o.workerWg.Add(n)
+	o.closeMu.Unlock()
 	for i := 0; i < n; i++ {
-		o.workerWg.Add(1)
 		enterrors.GoWrapper(func() {
 			defer o.workerWg.Done()
 			for sub := range o.workQueue {

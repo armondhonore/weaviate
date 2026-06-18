@@ -518,6 +518,40 @@ func TestSubmit_NoOpInMaintenanceMode(t *testing.T) {
 	require.Empty(t, entries, "Submit must be a no-op in maintenance mode (no shard dirs created)")
 }
 
+// TestSubmit_RaceWithClose: lazy pool init on the first Submit racing a
+// concurrent Close must stay clean under -race.
+func TestSubmit_RaceWithClose(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.PanicLevel)
+	for i := 0; i < 200; i++ {
+		o := New(Config{
+			Raft:         &stubRaft{},
+			Schema:       stubSchema{replicas: []string{"self"}},
+			PathResolver: stubPathResolver{root: t.TempDir()},
+			NodeSelector: &stubNodeSelector{},
+			NodeName:     "self",
+			Enabled:      true,
+			Concurrency:  2,
+			Logger:       logger,
+			PollInterval: 10 * time.Millisecond,
+			ProbeTimeout: 100 * time.Millisecond,
+		})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S"}, false)
+		}()
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = o.Close(ctx)
+		}()
+		wg.Wait()
+	}
+}
+
 // TestRunOne_CancelledTerminal verifies that a SELF_RECOVERY op reported
 // as CANCELLED by the FSM is treated as terminal: runOne returns without
 // re-registering a fresh op. Pre-fix, registerAndPoll returned a generic
