@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	batchclient "github.com/weaviate/weaviate/client/batch"
 	"github.com/weaviate/weaviate/client/nodes"
 	clschema "github.com/weaviate/weaviate/client/schema"
 	"github.com/weaviate/weaviate/cluster/router/types"
@@ -109,6 +110,22 @@ func TestSelfRecoveryViaLogReplayConcurrentChanges(t *testing.T) {
 		}
 		return 0, false, false
 	}
+	ingest := func(t *testing.T, objs []*models.Object, cl types.ConsistencyLevel) {
+		cls := string(cl)
+		require.EventuallyWithT(t, func(ct *assert.CollectT) {
+			params := batchclient.NewBatchObjectsCreateParams().
+				WithBody(batchclient.BatchObjectsCreateBody{Objects: objs}).
+				WithConsistencyLevel(&cls)
+			resp, err := helper.Client(t).Batch.BatchObjectsCreate(params, nil)
+			require.NoError(ct, err)
+			require.NotNil(ct, resp)
+			for _, o := range resp.Payload {
+				if o.Result != nil && o.Result.Errors != nil && len(o.Result.Errors.Error) > 0 {
+					require.Failf(ct, "batch ingest errors", "%v", o.Result.Errors.Error[0].Message)
+				}
+			}
+		}, 60*time.Second, 1*time.Second, "ingest never succeeded")
+	}
 
 	t.Run("wait for cluster to form quorum", func(t *testing.T) {
 		assert.EventuallyWithT(t, func(ct *assert.CollectT) {
@@ -140,7 +157,7 @@ func TestSelfRecoveryViaLogReplayConcurrentChanges(t *testing.T) {
 		for i := 0; i < initialCount; i++ {
 			batch[i] = pObj(i + 1)
 		}
-		helper.CreateObjectsBatch(t, batch)
+		ingest(t, batch, types.ConsistencyLevelQuorum)
 	})
 
 	t.Run("wipe node-3 and restart (rejoins via log replay)", func(t *testing.T) {
@@ -162,7 +179,7 @@ func TestSelfRecoveryViaLogReplayConcurrentChanges(t *testing.T) {
 		for i := 0; i < concurrentCount; i++ {
 			concurrent[i] = pObj(initialCount + i + 1)
 		}
-		helper.CreateObjectsBatchCL(t, concurrent, types.ConsistencyLevelQuorum)
+		ingest(t, concurrent, types.ConsistencyLevelQuorum)
 
 		_, perr := helper.Client(t).Schema.SchemaObjectsPropertiesAdd(
 			clschema.NewSchemaObjectsPropertiesAddParams().
@@ -176,7 +193,7 @@ func TestSelfRecoveryViaLogReplayConcurrentChanges(t *testing.T) {
 		for i := 0; i < newCollCount; i++ {
 			qBatch[i] = qObj(i + 1)
 		}
-		helper.CreateObjectsBatchCL(t, qBatch, types.ConsistencyLevelQuorum)
+		ingest(t, qBatch, types.ConsistencyLevelQuorum)
 	})
 
 	t.Run("all 3 nodes converge on P (initial+concurrent) and Q", func(t *testing.T) {
