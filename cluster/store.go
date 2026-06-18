@@ -865,6 +865,17 @@ func (st *Store) watchWipedJoiner() {
 		hasLeader := st.Leader() != ""
 		joined := st.wipedJoinerJoined.Load()
 
+		// Barrier reached but the Apply-thread trigger didn't fire (the entry at
+		// the barrier index was a config/noop, not a LogCommand). AppliedIndex
+		// counts all entry types, so catch it here instead of waiting out the
+		// no-progress timeout.
+		if wipedJoinerBarrierReached(st.wipedJoinerReloaded.Load(), st.joinBarrier.Load(), applied) {
+			st.log.WithField("applied_index", applied).
+				Info("wiped joiner: applied up to join barrier (watcher); running self-recovery reload")
+			st.finishWipedJoinerReload()
+			return
+		}
+
 		if wipedJoinerFreshClusterReady(joined, hasLeader, commit, applied) {
 			st.log.Info("wiped joiner: caught up on a fresh cluster (nothing to recover); loading")
 			st.finishWipedJoinerReload()
