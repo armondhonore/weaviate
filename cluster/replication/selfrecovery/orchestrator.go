@@ -531,6 +531,10 @@ func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, e
 				errors.Join(ErrSelfRecoveryShardNotInSchema, err))
 		}
 	}
+	// Serialise the erase+create+promote below against a worker or a
+	// concurrent Restart/AcceptEmpty on the same shard (same lock those take).
+	unlock := o.lockShard(ref)
+	defer unlock()
 	livePath := o.pathResolver.ShardPath(ref.Collection, ref.Shard)
 	recoveryPath := livePath + api.RecoveryFolderSuffix
 
