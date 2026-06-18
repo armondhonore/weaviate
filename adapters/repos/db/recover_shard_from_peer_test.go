@@ -195,3 +195,31 @@ func TestRecoverShardFromPeerIfNeeded(t *testing.T) {
 		}
 	})
 }
+
+// TestForEachShardSkipRecovering verifies all-shards ops skip a RecoveringShard
+// instead of panicking via mustLoad: forEachShardSkipRecovering omits it, and
+// addProperty (which calls initPropertyBuckets -> mustLoad) is a clean no-op.
+func TestForEachShardSkipRecovering(t *testing.T) {
+	class := &models.Class{Class: "C"}
+	promMetrics := monitoring.GetMetrics()
+	orch := &fakeSelfRecoveryOrch{enabled: true, submitOK: true}
+	idx := newTestIndexForRecovery(t, orch, nil)
+	idx.closingCtx = context.Background()
+
+	require.True(t, idx.recoverShardFromPeerIfNeeded(schemaReloadCtx(), class, "S", promMetrics))
+	_, isRecovering := idx.shards.Load("S").(*RecoveringShard)
+	require.True(t, isRecovering)
+
+	visited := 0
+	require.NoError(t, idx.forEachShardSkipRecovering(func(name string, shard ShardLike) error {
+		visited++
+		return nil
+	}))
+	require.Zero(t, visited, "recovering shard must be skipped")
+
+	require.NotPanics(t, func() {
+		require.NoError(t, idx.addProperty(context.Background(), &models.Property{
+			Name: "category", DataType: []string{"text"},
+		}))
+	})
+}

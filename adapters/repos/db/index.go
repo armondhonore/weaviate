@@ -762,7 +762,7 @@ func (i *Index) maintenanceModeEnabled() bool {
 
 // Iterate over all objects in the index, applying the callback function to each one.  Adding or removing objects during iteration is not supported.
 func (i *Index) IterateObjects(ctx context.Context, cb func(index *Index, shard ShardLike, object *storobj.Object) error) (err error) {
-	return i.ForEachShard(func(_ string, shard ShardLike) error {
+	return i.forEachShardSkipRecovering(func(_ string, shard ShardLike) error {
 		wrapper := func(object *storobj.Object) error {
 			return cb(i, shard, object)
 		}
@@ -786,6 +786,21 @@ func (i *Index) ForEachShard(f func(name string, shard ShardLike) error) error {
 	}
 
 	return i.shards.Range(f)
+}
+
+// forEachShardSkipRecovering is ForEachShard but skips shards being
+// SELF_RECOVERY-restored from a peer: their Store/buckets aren't usable yet
+// (LazyLoadShard.mustLoad panics on a load-blocked shard), and the recovered
+// data arrives in final form from the source peer. Use for any all-shards op
+// that touches shard internals; status-reporting callers that only read
+// GetStatus() can keep ForEachShard.
+func (i *Index) forEachShardSkipRecovering(f func(name string, shard ShardLike) error) error {
+	return i.ForEachShard(func(name string, shard ShardLike) error {
+		if shard.GetStatus() == storagestate.StatusRecovering {
+			return nil
+		}
+		return f(name, shard)
+	})
 }
 
 func (i *Index) ForEachLoadedShard(f func(name string, shard ShardLike) error) error {
@@ -823,7 +838,7 @@ func (i *Index) ForEachLoadedShardConcurrently(f func(name string, shard ShardLi
 
 // Iterate over all objects in the shard, applying the callback function to each one.  Adding or removing objects during iteration is not supported.
 func (i *Index) IterateShards(ctx context.Context, cb func(index *Index, shard ShardLike) error) (err error) {
-	return i.ForEachShard(func(key string, shard ShardLike) error {
+	return i.forEachShardSkipRecovering(func(key string, shard ShardLike) error {
 		return cb(i, shard)
 	})
 }
@@ -832,7 +847,7 @@ func (i *Index) addProperty(ctx context.Context, props ...*models.Property) erro
 	eg := enterrors.NewErrorGroupWrapper(i.logger)
 	eg.SetLimit(_NUMCPU)
 
-	i.ForEachShard(func(key string, shard ShardLike) error {
+	i.forEachShardSkipRecovering(func(key string, shard ShardLike) error {
 		shard.initPropertyBuckets(ctx, eg, false, props...)
 		return nil
 	})
