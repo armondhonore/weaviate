@@ -1874,9 +1874,8 @@ const (
 	DefaultMaximumAllowedShardsPerCollection       = -1 // unlimited
 	DefaultUsageLimitsErrorMessage                 = "" // empty → usagelimits.RenderTemplate falls back to its built-in default
 	DefaultRestrictionsErrorMessage                = "" // empty → restrictions.RenderTemplate falls back to its built-in default
-	// SELF_RECOVERY shard-level concurrency cap and ceiling.
-	DefaultSelfRecoveryConcurrency = 10
-	MaxSelfRecoveryConcurrency     = 32
+	DefaultSelfRecoveryConcurrency                 = 10
+	MaxSelfRecoveryConcurrency                     = 32
 )
 
 const VectorizerModuleNone = "none"

@@ -18,11 +18,8 @@ import (
 	"github.com/weaviate/weaviate/cluster"
 )
 
-// setupRaftDebugHandlers registers test-only admin endpoints that make
-// RAFT scriptable. The force-snapshot endpoint lets SELF_RECOVERY
-// acceptance tests pin a wiped node's rejoin to the InstallSnapshot →
-// Restore path deterministically (recovery also engages on a plain
-// log-replay rejoin; see the join barrier in docs/self-recovery.md).
+// setupRaftDebugHandlers registers test-only admin endpoints that make RAFT scriptable.
+// Force-snapshot lets SELF_RECOVERY tests pin a wiped node's rejoin to the InstallSnapshot path.
 func setupRaftDebugHandlers(appState *state.State, raft *cluster.Raft) {
 	logger := appState.Logger.WithField("handler", "raft_debug")
 

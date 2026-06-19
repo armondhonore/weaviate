@@ -36,8 +36,6 @@ import (
 	"github.com/weaviate/weaviate/usecases/cluster"
 )
 
-// --- Stubs ---
-
 type stubSchema struct {
 	replicas []string
 	err      error
@@ -53,8 +51,6 @@ func (p stubPathResolver) ShardPath(collection, shard string) string {
 	return p.root + "/" + collection + "/" + shard
 }
 
-// stubNodeSelector implements just enough of cluster.NodeSelector for
-// tests. The orchestrator only uses NodeAddress + NodeGRPCPort.
 type stubNodeSelector struct {
 	addrs map[string]string
 	ports map[string]int
@@ -74,12 +70,8 @@ func (s *stubNodeSelector) LocalName() string                                 { 
 func (s *stubNodeSelector) Leave() error                                      { return nil }
 func (s *stubNodeSelector) Shutdown() error                                   { return nil }
 
-// Compile-time guard.
 var _ cluster.NodeSelector = (*stubNodeSelector)(nil)
 
-// stubFileReplicationClient lets each peer's ListFiles return whatever
-// the test wants. Other methods are unimplemented (the orchestrator
-// only calls ListFiles for probes).
 type stubFileReplicationClient struct {
 	listFiles func(ctx context.Context, in *protocol.ListFilesRequest) (*protocol.ListFilesResponse, error)
 }
@@ -104,8 +96,6 @@ func (c *stubFileReplicationClient) GetFile(ctx context.Context, in *protocol.Ge
 	return nil, errors.New("GetFile not stubbed")
 }
 
-// stubRaft records ops registered and serves a programmable response
-// for GetReplicationDetailsByReplicationId.
 type stubRaft struct {
 	mu                  sync.Mutex
 	registeredCalls     []registeredCall
@@ -114,9 +104,6 @@ type stubRaft struct {
 	registerHook        func(uuid strfmt.UUID, sourceNode, collection, shard, targetNode string)
 	getDetailsCallCount atomic.Int32
 
-	// Restart-related: ops indexed by (collection, shard) and the list
-	// of UUIDs cancelled via CancelReplication, populated by the test
-	// to drive Restart-path assertions.
 	opsByCollShard map[string][]api.ReplicationDetailsResponse
 	cancelled      []strfmt.UUID
 }
@@ -146,8 +133,6 @@ func (r *stubRaft) GetReplicationDetailsByReplicationId(ctx context.Context, uui
 	defer r.mu.Unlock()
 	resp, ok := r.detailsByUUID[uuid]
 	if !ok {
-		// Mirror the production error so the orchestrator's
-		// errors.Is(...ErrReplicationOperationNotFound) check fires.
 		return api.ReplicationDetailsResponse{}, replicationtypes.ErrReplicationOperationNotFound
 	}
 	return resp, nil
@@ -169,11 +154,6 @@ func (r *stubRaft) CancelReplication(ctx context.Context, uuid strfmt.UUID) erro
 	return nil
 }
 
-// --- Tests ---
-
-// newOrchestratorForTest wires an Orchestrator without the runtime
-// config plumbing — the feature flag is bypassed by directly calling
-// runOne / probeAndDecide.
 func newOrchestratorForTest(t *testing.T, raft RaftEntryPoint, schemaR SchemaReader, ns *stubNodeSelector,
 	clientFactory copier.FileReplicationServiceClientFactory, paths PathResolver,
 ) *Orchestrator {
@@ -188,19 +168,16 @@ func newOrchestratorForTest(t *testing.T, raft RaftEntryPoint, schemaR SchemaRea
 		NodeSelector:  ns,
 		NodeName:      "self",
 		Logger:        logger,
-		PollInterval:  10_000_000, // 10ms in nanoseconds
+		PollInterval:  10_000_000,
 		ProbeTimeout:  100_000_000,
 	})
-	o.probeBackoffMin = 5_000_000 // 5ms
+	o.probeBackoffMin = 5_000_000
 	o.probeBackoffMax = 20_000_000
 	o.restartTimeout = 200 * time.Millisecond
 	o.vanishedGracePeriod = 10 * time.Millisecond
 	return o
 }
 
-// TestProbeAndDecide_PeerHasData covers the happy path: at least one
-// peer reports a non-empty file list, so the decision is to register
-// a SELF_RECOVERY op against that peer.
 func TestProbeAndDecide_PeerHasData(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1", "peer2": "10.0.0.2"},
@@ -222,9 +199,6 @@ func TestProbeAndDecide_PeerHasData(t *testing.T) {
 	require.NotEqual(t, "self", dec.sourceNode)
 }
 
-// TestProbeAndDecide_AllEmpty covers the catastrophic-wipe case: all
-// peers reachable, all return empty file lists. Decision is empty
-// fallback (the orchestrator will MkdirAll and create empty + metric).
 func TestProbeAndDecide_AllEmpty(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1", "peer2": "10.0.0.2"},
@@ -245,9 +219,6 @@ func TestProbeAndDecide_AllEmpty(t *testing.T) {
 	require.Len(t, dec.probedPeers, 2)
 }
 
-// TestProbeAndDecide_AllUnreachable covers the "wait for peers" case:
-// all peers return transport errors. We must NOT silently fall through
-// to empty; we must signal retry.
 func TestProbeAndDecide_AllUnreachable(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1"},
@@ -263,17 +234,12 @@ func TestProbeAndDecide_AllUnreachable(t *testing.T) {
 	require.Equal(t, actionRetry, dec.action, "all peers unreachable must yield retry, never empty fallback")
 }
 
-// TestProbeAndDecide_MixedUnreachableAndEmpty covers the conservative
-// rule: as long as ANY peer was unreachable AND no peer reports data,
-// stay in retry. Don't silently create empty when we might just be
-// hitting transient networking issues against the only-other-replica.
 func TestProbeAndDecide_MixedUnreachableAndEmpty(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1", "peer2": "10.0.0.2"},
 		ports: map[string]int{"peer1": 50051, "peer2": 50051},
 	}
 	clientFactory := func(ctx context.Context, addr string) (copier.FileReplicationServiceClient, error) {
-		// peer1 (10.0.0.1) reports no data; peer2 (10.0.0.2) is unreachable.
 		if addr == "10.0.0.1:50051" {
 			return &stubFileReplicationClient{
 				listFiles: func(ctx context.Context, in *protocol.ListFilesRequest) (*protocol.ListFilesResponse, error) {
@@ -290,9 +256,6 @@ func TestProbeAndDecide_MixedUnreachableAndEmpty(t *testing.T) {
 	require.Equal(t, actionRetry, dec.action, "any unreachable peer + no data anywhere must yield retry, not empty fallback")
 }
 
-// TestProbeAndDecide_NoOtherReplicas degenerate case: schema lists
-// only this node as a replica. There is nothing to probe; decision
-// is empty fallback (consistent with "we have no peer to recover from").
 func TestProbeAndDecide_NoOtherReplicas(t *testing.T) {
 	ns := &stubNodeSelector{addrs: map[string]string{}, ports: map[string]int{}}
 	o := newOrchestratorForTest(t, &stubRaft{}, stubSchema{replicas: []string{"self"}}, ns, nil, stubPathResolver{root: t.TempDir()})
@@ -302,8 +265,6 @@ func TestProbeAndDecide_NoOtherReplicas(t *testing.T) {
 	require.Equal(t, actionEmptyFallback, dec.action)
 }
 
-// TestEmptyFallback_CreatesDir: the empty-fallback path creates the
-// live shard directory.
 func TestEmptyFallback_CreatesDir(t *testing.T) {
 	tmp := t.TempDir()
 	o := newOrchestratorForTest(t, &stubRaft{}, stubSchema{}, &stubNodeSelector{}, nil, stubPathResolver{root: tmp})
@@ -315,18 +276,9 @@ func TestEmptyFallback_CreatesDir(t *testing.T) {
 	require.True(t, info.IsDir())
 }
 
-// TestRestart_CancelsInflightAndErasesRecoveryDir verifies the
-// "cancel and start from scratch" path: any in-flight SELF_RECOVERY
-// op for (collection, shard) targeting this node is cancelled, the
-// partial ".recovering/" directory is erased, and a fresh recovery is
-// submitted. Other ops (different transfer type, different target,
-// already terminal) are left alone.
 func TestRestart_CancelsInflightAndErasesRecoveryDir(t *testing.T) {
 	tmp := t.TempDir()
 
-	// Pre-existing partial recovery on disk + an in-flight FSM op
-	// targeting "self" (the node under test). The op for "other-node"
-	// and the COPY op should NOT be cancelled.
 	livePath := tmp + "/C/S"
 	recoveryPath := livePath + ".recovering"
 	require.NoError(t, os.MkdirAll(recoveryPath, 0o755))
@@ -352,7 +304,7 @@ func TestRestart_CancelsInflightAndErasesRecoveryDir(t *testing.T) {
 					Uuid:         otherTargetUUID,
 					Collection:   "C",
 					ShardId:      "S",
-					TargetNodeId: "other-node", // not us
+					TargetNodeId: "other-node",
 					TransferType: api.SELF_RECOVERY.String(),
 					Status:       api.ReplicationDetailsState{State: string(api.HYDRATING)},
 				},
@@ -361,7 +313,7 @@ func TestRestart_CancelsInflightAndErasesRecoveryDir(t *testing.T) {
 					Collection:   "C",
 					ShardId:      "S",
 					TargetNodeId: "self",
-					TransferType: api.COPY.String(), // not SELF_RECOVERY
+					TransferType: api.COPY.String(),
 					Status:       api.ReplicationDetailsState{State: string(api.HYDRATING)},
 				},
 				{
@@ -370,43 +322,31 @@ func TestRestart_CancelsInflightAndErasesRecoveryDir(t *testing.T) {
 					ShardId:      "S",
 					TargetNodeId: "self",
 					TransferType: api.SELF_RECOVERY.String(),
-					Status:       api.ReplicationDetailsState{State: string(api.READY)}, // already terminal
+					Status:       api.ReplicationDetailsState{State: string(api.READY)},
 				},
 			},
 		},
 	}
 
-	// Schema: at least one peer with data so the post-restart probe
-	// would find a source. (We don't assert the new op registers
-	// because the orchestrator's flag is off in this test setup; we
-	// only assert the cancel + erase semantics here.)
 	o := newOrchestratorForTest(t, raft, stubSchema{replicas: []string{"self", "peer1"}}, &stubNodeSelector{}, nil, stubPathResolver{root: tmp})
 
 	require.NoError(t, o.Restart(context.Background(), ShardRef{Collection: "C", Shard: "S"}))
 
-	// Only the in-flight SELF_RECOVERY op targeting "self" was cancelled.
 	require.Equal(t, []strfmt.UUID{inflightUUID}, raft.cancelled,
 		"only the in-flight SELF_RECOVERY op for self should be cancelled, got %v", raft.cancelled)
 
-	// Recovery dir is gone; the live dir is unaffected (it didn't exist).
 	_, err := os.Stat(recoveryPath)
 	require.True(t, errors.Is(err, fs.ErrNotExist), "recovery dir should be erased, got %v", err)
 }
 
-// TestRestart_NoInflightOpsAndNoRecoveryDir is the benign "nothing to
-// do" case: no FSM ops, no leftover dir. Restart should still succeed
-// (and just submit a fresh recovery, but Submit is a no-op when the
-// feature flag is off, which it is in tests).
 func TestRestart_NoInflightOpsAndNoRecoveryDir(t *testing.T) {
-	raft := &stubRaft{} // GetReplicationDetailsByCollectionAndShard returns "not found"
+	raft := &stubRaft{}
 	o := newOrchestratorForTest(t, raft, stubSchema{replicas: []string{"self"}}, &stubNodeSelector{}, nil, stubPathResolver{root: t.TempDir()})
 
 	require.NoError(t, o.Restart(context.Background(), ShardRef{Collection: "C", Shard: "S"}))
 	require.Empty(t, raft.cancelled)
 }
 
-// TestAcceptEmpty_RemovesRecoveryDir creates a stale ".recovering"
-// folder and verifies AcceptEmpty wipes it and creates the live path.
 func TestAcceptEmpty_RemovesRecoveryDir(t *testing.T) {
 	tmp := t.TempDir()
 	o := newOrchestratorForTest(t, &stubRaft{}, stubSchema{}, &stubNodeSelector{}, nil, stubPathResolver{root: tmp})
@@ -428,20 +368,17 @@ func TestAcceptEmpty_RemovesRecoveryDir(t *testing.T) {
 	require.True(t, info.IsDir())
 }
 
-// TestCleanupOrphanRecoveryDirs verifies orphans (recovery dir + live
-// sibling) are removed; in-flight recoveries (recovery dir alone) and
-// unrelated dirs are left untouched.
 func TestCleanupOrphanRecoveryDirs(t *testing.T) {
 	root := t.TempDir()
 	mk := func(p string) {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, p), 0o755))
 	}
-	mk("Coll/shard1")              // live (no orphan needed)
-	mk("Coll/shard1.recovering")   // orphan: live sibling exists
-	mk("Coll/shard2.recovering")   // in-flight: no sibling
-	mk("Coll/shard3")              // live, no recovery dir
-	mk("Coll2/tenantA")            // live (different collection)
-	mk("Coll2/tenantA.recovering") // orphan in another collection
+	mk("Coll/shard1")
+	mk("Coll/shard1.recovering")
+	mk("Coll/shard2.recovering")
+	mk("Coll/shard3")
+	mk("Coll2/tenantA")
+	mk("Coll2/tenantA.recovering")
 
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
@@ -454,25 +391,16 @@ func TestCleanupOrphanRecoveryDirs(t *testing.T) {
 		filepath.Join(root, "Coll2/tenantA.recovering"),
 	}, removed)
 
-	// Live dirs untouched.
 	for _, p := range []string{"Coll/shard1", "Coll/shard3", "Coll2/tenantA"} {
 		_, err := os.Stat(filepath.Join(root, p))
 		require.NoError(t, err, "live dir %s should be present", p)
 	}
-	// In-flight recovery untouched.
 	_, err = os.Stat(filepath.Join(root, "Coll/shard2.recovering"))
 	require.NoError(t, err, "in-flight recovery dir must be preserved")
 }
 
-// TestRegisterAndPoll_ReturnsNotFoundWhenOpVanishes covers the
-// class-deletion / tenant-deletion / ForceDelete* path: the orchestrator
-// is polling the FSM for a UUID that gets force-deleted upstream. After
-// a few consecutive not-found responses, registerAndPoll must return
-// the typed sentinel so runOne can exit instead of looping forever.
 func TestRegisterAndPoll_ReturnsNotFoundWhenOpVanishes(t *testing.T) {
 	raft := &stubRaft{
-		// detailsByUUID is nil → every GetReplicationDetailsByReplicationId
-		// call returns ErrReplicationOperationNotFound.
 		detailsByUUID: nil,
 	}
 	o := newOrchestratorForTest(t, raft, stubSchema{replicas: []string{"self", "peer1"}}, &stubNodeSelector{}, nil, stubPathResolver{root: t.TempDir()})
@@ -483,10 +411,6 @@ func TestRegisterAndPoll_ReturnsNotFoundWhenOpVanishes(t *testing.T) {
 		"expected ErrReplicationOperationNotFound after sustained not-found polls, got: %v", err)
 }
 
-// TestSubmit_NoOpInMaintenanceMode verifies the maintenance-mode gate:
-// when the operator has put the node into maintenance mode, Submit
-// must not spawn any work, and the recovery semaphore must remain
-// uncontended.
 func TestSubmit_NoOpInMaintenanceMode(t *testing.T) {
 	raft := &stubRaft{}
 	logger := logrus.New()
@@ -506,20 +430,13 @@ func TestSubmit_NoOpInMaintenanceMode(t *testing.T) {
 		ProbeTimeout:           100_000_000,
 	})
 
-	// Submit must return immediately without spawning work; if it did
-	// spawn, the stubSchema (single replica = self) would fall through
-	// to actionEmptyFallback and create a directory.
 	o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S"}, false)
 
-	// Empty-fallback would have called PathResolver.ShardPath; we
-	// detect "did anything happen?" by checking the temp dir is empty.
 	entries, err := os.ReadDir(o.pathResolver.(stubPathResolver).root)
 	require.NoError(t, err)
 	require.Empty(t, entries, "Submit must be a no-op in maintenance mode (no shard dirs created)")
 }
 
-// TestSubmit_RaceWithClose: lazy pool init on the first Submit racing a
-// concurrent Close must stay clean under -race.
 func TestSubmit_RaceWithClose(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
@@ -552,11 +469,6 @@ func TestSubmit_RaceWithClose(t *testing.T) {
 	}
 }
 
-// TestRunOne_CancelledTerminal verifies that a SELF_RECOVERY op reported
-// as CANCELLED by the FSM is treated as terminal: runOne returns without
-// re-registering a fresh op. Pre-fix, registerAndPoll returned a generic
-// error and runOne would retry — defeating operator-driven cancel via
-// /replication/replicate/{id}/cancel.
 func TestRunOne_CancelledTerminal(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1"},
@@ -570,8 +482,6 @@ func TestRunOne_CancelledTerminal(t *testing.T) {
 		}, nil
 	}
 	raft := &stubRaft{detailsByUUID: map[strfmt.UUID]api.ReplicationDetailsResponse{}}
-	// Once an op is registered, the FSM immediately returns CANCELLED
-	// for that UUID.
 	raft.registerHook = func(uuid strfmt.UUID, _, _, _, _ string) {
 		raft.mu.Lock()
 		defer raft.mu.Unlock()
@@ -600,20 +510,12 @@ func TestRunOne_CancelledTerminal(t *testing.T) {
 	require.Equal(t, 1, calls, "operator-cancelled op must not be re-registered; got %d RegisterSelfRecovery calls", calls)
 }
 
-// TestPerOrchestratorRNG_NotDeterministic verifies the per-orchestrator
-// RNG produces variable shuffle output across calls. Pre-fix, rand.Shuffle
-// went through the global math/rand source, which (without explicit seed)
-// is deterministic — every call yielded the same permutation.
 func TestPerOrchestratorRNG_NotDeterministic(t *testing.T) {
 	o := New(Config{
-		// minimal config; the test exercises the rng field directly.
 		Logger: logrus.New(),
 	})
 	require.NotNil(t, o.rng, "Orchestrator.rng must be initialised by New()")
 
-	// Shuffle a 10-element slice many times; if any two orderings
-	// differ we have variability. Pre-fix this would produce the same
-	// order every iteration.
 	const N = 20
 	first := make([]int, 10)
 	for i := range first {
@@ -642,11 +544,6 @@ func TestPerOrchestratorRNG_NotDeterministic(t *testing.T) {
 	require.True(t, differs, "per-orchestrator RNG produced identical shuffles across %d trials — global rand regression?", N+1)
 }
 
-// TestAcceptEmpty_PromotesInMemoryWrapper verifies the operator
-// escape-hatch invokes onRecoveryComplete after creating the empty
-// shard dir. Without this, a RecoveryShard wrapper installed by the
-// startup hook stays load-blocked forever despite disk being ready.
-// Mirrors the empty-fallback path inside runOne.
 func TestAcceptEmpty_PromotesInMemoryWrapper(t *testing.T) {
 	tmp := t.TempDir()
 	logger := logrus.New()
@@ -659,7 +556,7 @@ func TestAcceptEmpty_PromotesInMemoryWrapper(t *testing.T) {
 	)
 	o := New(Config{
 		Raft:         &stubRaft{},
-		Schema:       stubSchema{}, // ShardReplicas returns nil err with default replicas
+		Schema:       stubSchema{},
 		PathResolver: stubPathResolver{root: tmp},
 		NodeSelector: &stubNodeSelector{},
 		NodeName:     "self",
@@ -679,10 +576,6 @@ func TestAcceptEmpty_PromotesInMemoryWrapper(t *testing.T) {
 	require.Equal(t, "S", gotShard.Load())
 }
 
-// TestAcceptEmpty_SchemaErrorIsTypedSentinel verifies that the schema
-// gate's error chain contains ErrSelfRecoveryShardNotInSchema. The REST
-// handler relies on this sentinel to map the failure to HTTP 404
-// instead of the generic 500.
 func TestAcceptEmpty_SchemaErrorIsTypedSentinel(t *testing.T) {
 	tmp := t.TempDir()
 	logger := logrus.New()
@@ -702,11 +595,6 @@ func TestAcceptEmpty_SchemaErrorIsTypedSentinel(t *testing.T) {
 		"error chain must contain ErrSelfRecoveryShardNotInSchema for handler 4xx mapping; got %v", err)
 }
 
-// TestCancelInflightSelfRecoveryOps_NoMetricDoubleCount verifies the
-// cancel path does NOT pre-increment CompletedTotal{result="cancelled"}
-// — runOne is the single source of truth, fired when the FSM state is
-// observed terminal. Pre-incrementing here used to double-count and
-// would also tick even if the cancel RPC ultimately failed.
 func TestCancelInflightSelfRecoveryOps_NoMetricDoubleCount(t *testing.T) {
 	raft := &stubRaft{
 		opsByCollShard: map[string][]api.ReplicationDetailsResponse{

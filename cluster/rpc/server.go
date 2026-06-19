@@ -49,8 +49,7 @@ type raftPeers interface {
 	Notify(id string, addr string) error
 	Remove(id string) error
 	Leader() string
-	// CommitIndex is the local committed RAFT index, served to a joiner as
-	// its catch-up barrier (0 before raft is up).
+	// local committed RAFT index, served to a joiner as its catch-up barrier.
 	CommitIndex() uint64
 }
 
@@ -102,9 +101,8 @@ func (s *Server) JoinPeer(_ context.Context, req *cmd.JoinPeerRequest) (*cmd.Joi
 		return &cmd.JoinPeerResponse{Leader: s.raftPeers.Leader()}, toRPCError(err)
 	}
 
-	// Only the leader reaches here (a follower returns ErrNotLeader with a
-	// redirect above). Hand the joiner the committed index as its catch-up
-	// barrier; see Store.SetJoinBarrier.
+	// Only the leader reaches here; hand the joiner the committed index as its
+	// catch-up barrier.
 	return &cmd.JoinPeerResponse{LeaderCommitIndex: s.raftPeers.CommitIndex()}, nil
 }
 

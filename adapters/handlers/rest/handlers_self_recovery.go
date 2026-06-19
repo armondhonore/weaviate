@@ -22,9 +22,7 @@ import (
 	"github.com/weaviate/weaviate/cluster/replication/selfrecovery"
 )
 
-// validShardOrCollection rejects values that could escape the data root
-// when joined into <root>/<class>/<shard>. Defense-in-depth on the
-// operator endpoints; the schema already restricts names to a safe charset.
+// validShardOrCollection rejects values that could escape the data root when joined into <root>/<class>/<shard>.
 func validShardOrCollection(name string) error {
 	if name == "" {
 		return errors.New("must not be empty")
@@ -38,9 +36,7 @@ func validShardOrCollection(name string) error {
 	return nil
 }
 
-// setupSelfRecoveryHandlers registers the SELF_RECOVERY operator
-// endpoints under /debug/self-recovery (accept-empty and restart),
-// sibling of the other node-local admin handlers in handlers_debug.go.
+// setupSelfRecoveryHandlers registers the SELF_RECOVERY operator endpoints under /debug/self-recovery.
 func setupSelfRecoveryHandlers(appState *state.State, orch *selfrecovery.Orchestrator) {
 	logger := appState.Logger.WithField("handler", "self_recovery")
 
@@ -63,14 +59,12 @@ func setupSelfRecoveryHandlers(appState *state.State, orch *selfrecovery.Orchest
 			http.Error(w, "self-recovery is not configured on this node", http.StatusServiceUnavailable)
 			return
 		}
-		// WithoutCancel: AcceptEmpty's promotion step (LoadLocalShard)
-		// can outlive the HTTP request; preserve values for tracing.
+		// WithoutCancel: promotion (LoadLocalShard) can outlive the request.
 		path, err := orch.AcceptEmpty(context.WithoutCancel(r.Context()), selfrecovery.ShardRef{Collection: collection, Shard: shard})
 		if err != nil {
 			logger.WithError(err).WithField("collection", collection).WithField("shard", shard).
 				Error("self-recovery accept-empty failed")
-			// Schema-gate failure (unknown collection/shard) is a
-			// client-side mistake, not a 500 — surface as 404.
+			// Unknown collection/shard is a client mistake, not a 500.
 			if errors.Is(err, selfrecovery.ErrSelfRecoveryShardNotInSchema) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
@@ -88,7 +82,6 @@ func setupSelfRecoveryHandlers(appState *state.State, orch *selfrecovery.Orchest
 		}
 	}))
 
-	// POST /debug/self-recovery/restart?collection=X&shard=Y
 	// Cancels in-flight ops, erases ".recovering/", submits afresh.
 	http.HandleFunc("/debug/self-recovery/restart", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -109,19 +102,16 @@ func setupSelfRecoveryHandlers(appState *state.State, orch *selfrecovery.Orchest
 			http.Error(w, "self-recovery is not configured on this node", http.StatusServiceUnavailable)
 			return
 		}
-		// WithoutCancel: the resubmit outlives the handler; r.Context()
-		// would cancel it on return. Values (tracing) still inherited.
+		// WithoutCancel: the resubmit outlives the handler.
 		if err := orch.RestartRecovery(context.WithoutCancel(r.Context()), collection, shard); err != nil {
 			logger.WithError(err).WithField("collection", collection).WithField("shard", shard).
 				Error("self-recovery restart failed")
-			// Schema-gate failure (unknown collection/shard) is a
-			// client-side mistake, not a 500 — surface as 404.
+			// Unknown collection/shard is a client mistake, not a 500.
 			if errors.Is(err, selfrecovery.ErrSelfRecoveryShardNotInSchema) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			// The shard already has a live local dir — nothing to restart.
-			// That's an operator-side mistake, not a 500.
+			// Shard already has a live local dir — nothing to restart.
 			if errors.Is(err, selfrecovery.ErrSelfRecoveryShardAlreadyLive) {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return

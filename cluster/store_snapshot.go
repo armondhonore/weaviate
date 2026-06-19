@@ -174,11 +174,9 @@ func (st *Store) Restore(rc io.ReadCloser) error {
 
 		snapIndex := lastSnapshotIndex(st.snapshotStore)
 		if st.wipedJoinerCandidate.Load() {
-			// A wiped joiner caught up via InstallSnapshot. Route through
-			// finishWipedJoinerReload (idempotent with the Apply-barrier and
-			// watcher paths) rather than reloadDBFromSchema directly, so it
-			// latches wipedJoinerReloaded: the watcher exits and catch-up
-			// suppression stops.
+			// Wiped joiner caught up via InstallSnapshot; route through
+			// finishWipedJoinerReload so it latches wipedJoinerReloaded (watcher
+			// exits, catch-up suppression stops).
 			st.finishWipedJoinerReload()
 		} else if st.lastAppliedIndexToDB.Load() <= snapIndex {
 			// db shall reload after snapshot applied to schema

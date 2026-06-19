@@ -26,8 +26,7 @@ var (
 	ErrShardNotFound = errors.New("shard not found")
 )
 
-// validateSchemaReader narrows schema.SchemaReader to what this
-// validator needs, so tests can stub it.
+// validateSchemaReader narrows schema.SchemaReader so tests can stub it.
 type validateSchemaReader interface {
 	ClassInfo(class string) schema.ClassInfo
 	ShardReplicas(class, shard string) (nodes []string, err error)
@@ -68,8 +67,7 @@ func ValidateReplicationReplicateShard(schemaReader validateSchemaReader, c *api
 		return fmt.Errorf("could not find shard %s for collection %s on source node %s: %w", c.SourceShard, c.SourceCollection, c.SourceNode, ErrNodeNotFound)
 	}
 	if c.TransferType == api.SELF_RECOVERY.String() {
-		// SELF_RECOVERY: target must already be a replica (we're
-		// re-hydrating); otherwise it's an upstream logic error.
+		// re-hydration requires the target to already be a replica
 		if !foundTarget {
 			return fmt.Errorf("self-recovery for shard %s of collection %s requires target node %s to already be a replica: %w", c.SourceShard, c.SourceCollection, c.TargetNode, ErrNodeNotFound)
 		}

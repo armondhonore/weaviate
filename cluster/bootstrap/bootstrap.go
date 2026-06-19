@@ -43,9 +43,8 @@ type Bootstrapper struct {
 	localNodeID   string
 	voter         bool
 
-	// onJoin, if set, is called with the leader's committed RAFT index when a
-	// cluster is successfully joined (the wiped-joiner catch-up barrier). May
-	// be 0 when the leader didn't supply one (older version).
+	// onJoin, if set, receives the leader's committed RAFT index (wiped-joiner
+	// catch-up barrier) on a successful join; 0 if the leader supplied none.
 	onJoin func(leaderCommitIndex uint64)
 
 	retryPeriod time.Duration

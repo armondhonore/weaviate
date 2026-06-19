@@ -696,8 +696,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 	appState.ClusterService = rCluster.New(rConfig, appState.AuthzController, appState.AuthzSnapshotter, appState.GRPCServerMetrics)
 	migrator.SetCluster(appState.ClusterService.Raft)
 
-	// Wired after Cluster (Raft dep) and before WaitForStartup so the
-	// schema-replay shard-init pass can hand off missing-on-disk shards.
+	// Wired after Cluster (Raft dep) and before WaitForStartup so schema-replay shard-init can hand off missing shards.
 	selfRecoveryOrch := selfrecovery.New(selfrecovery.Config{
 		Raft:                   appState.ClusterService.Raft,
 		Schema:                 selfRecoverySchemaReader{r: appState.ClusterService.SchemaReader()},
@@ -718,8 +717,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		Logger: appState.Logger,
 	})
 	appState.DB.SetSelfRecoveryOrchestrator(selfRecoveryOrch)
-	// Only expose the debug endpoints (incl. test-only force-snapshot)
-	// when the feature is on — not even on the profiling port otherwise.
+	// Expose debug endpoints (incl. test-only force-snapshot) only when the feature is on.
 	if appState.ServerConfig.Config.Replication.SelfRecoveryEnabled {
 		setupSelfRecoveryHandlers(appState, selfRecoveryOrch)
 		setupRaftDebugHandlers(appState, appState.ClusterService.Raft)
@@ -822,8 +820,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 				Fatal("could not open cloud meta store")
 			metaStoreReady.failure(err)
 		} else {
-			// Past initial FSM replay: any further AddClass calls are
-			// runtime additions, not data-loss candidates.
+			// Past initial FSM replay: further AddClass calls are runtime additions, not data-loss candidates.
 			appState.DB.MarkRaftBootstrapComplete()
 			metaStoreReady.success()
 		}

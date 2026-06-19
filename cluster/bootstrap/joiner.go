@@ -43,9 +43,8 @@ func NewJoiner(peerJoiner PeerJoiner, localNodeID string, localRaftAddr string, 
 
 // Do will attempt to send to any nodes in remoteNodes a JoinPeerRequest for j.localNodeID with the address j.localRaftAddr.
 // Will join as voter if j.voter is true, non voter otherwise.
-// Returns the leader address and the leader's committed RAFT index at join
-// time (the wiped-joiner catch-up barrier; 0 when unavailable, e.g. an older
-// leader) if a cluster was joined, or an error otherwise.
+// Returns the leader address and its committed RAFT index at join (wiped-joiner
+// catch-up barrier; 0 when unavailable), or an error.
 func (j *Joiner) Do(ctx context.Context, lg *logrus.Logger, remoteNodes map[string]string) (string, uint64, error) {
 	if entSentry.Enabled() {
 		span := sentry.StartSpan(ctx, "raft.bootstrap.join",
@@ -88,7 +87,7 @@ func (j *Joiner) Do(ctx context.Context, lg *logrus.Logger, remoteNodes map[stri
 
 		// avoid self multiple join attempts
 		if rpcStatusCode == rpc.NotLeaderRPCCode && leaderAddr == j.localRaftAddr {
-			// This node is the leader; it is not a joiner needing a barrier.
+			// We are the leader; no barrier needed.
 			return leaderAddr, 0, nil
 		}
 

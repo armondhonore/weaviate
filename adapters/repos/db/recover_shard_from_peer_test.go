@@ -25,7 +25,6 @@ import (
 	"github.com/weaviate/weaviate/usecases/monitoring"
 )
 
-// fakeSelfRecoveryOrch is a stub SelfRecoveryOrchestrator for unit tests.
 type fakeSelfRecoveryOrch struct {
 	enabled     bool
 	inflightOp  bool
@@ -34,9 +33,7 @@ type fakeSelfRecoveryOrch struct {
 
 	submitCalls      int
 	gotFromBootstrap bool
-	// submitHook runs synchronously inside SubmitRecovery — used to
-	// inspect caller state at the moment a worker would have dequeued.
-	submitHook func()
+	submitHook       func()
 }
 
 func (f *fakeSelfRecoveryOrch) Enabled() bool { return f.enabled }
@@ -71,12 +68,10 @@ func newTestIndexForRecovery(t *testing.T, orch SelfRecoveryOrchestrator, raftBo
 	}
 }
 
-// schemaReloadCtx tags the ctx the way executor.ReloadLocalDB does.
 func schemaReloadCtx() context.Context {
 	return enterrors.WithStartupDBLoad(context.Background())
 }
 
-// TestShouldRecoverShardFromPeer covers the pure eligibility predicate.
 func TestShouldRecoverShardFromPeer(t *testing.T) {
 	t.Run("orchestrator nil", func(t *testing.T) {
 		idx := &Index{Config: IndexConfig{RootPath: t.TempDir(), ClassName: "C"}, logger: logrus.New()}
@@ -122,10 +117,7 @@ func TestShouldRecoverShardFromPeer(t *testing.T) {
 	})
 }
 
-// TestRecoverShardFromPeerIfNeeded covers the install + submit
-// orchestration on top of the eligibility predicate. The install must
-// happen BEFORE SubmitRecovery or a fast-firing worker can clobber
-// state — see install_before_submit_ordering subtest.
+// The wrapper install must happen before SubmitRecovery, else a fast worker can clobber state.
 func TestRecoverShardFromPeerIfNeeded(t *testing.T) {
 	class := &models.Class{Class: "C"}
 	promMetrics := monitoring.GetMetrics()
@@ -150,9 +142,6 @@ func TestRecoverShardFromPeerIfNeeded(t *testing.T) {
 	})
 
 	t.Run("install_before_submit_ordering", func(t *testing.T) {
-		// Regression: the wrapper must be in i.shards by the time
-		// SubmitRecovery is called, so a worker that dequeues
-		// immediately cannot overtake the install.
 		var sawWrapperAtSubmit bool
 		var idx *Index
 		orch := &fakeSelfRecoveryOrch{enabled: true, submitOK: true}
@@ -196,9 +185,6 @@ func TestRecoverShardFromPeerIfNeeded(t *testing.T) {
 	})
 }
 
-// TestForEachShardSkipRecovering verifies all-shards ops skip a RecoveringShard
-// instead of panicking via mustLoad: forEachShardSkipRecovering omits it, and
-// addProperty (which calls initPropertyBuckets -> mustLoad) is a clean no-op.
 func TestForEachShardSkipRecovering(t *testing.T) {
 	class := &models.Class{Class: "C"}
 	promMetrics := monitoring.GetMetrics()

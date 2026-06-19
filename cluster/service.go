@@ -175,8 +175,7 @@ func (c *Service) Open(ctx context.Context, db schema.Indexer) error {
 		joiner := bootstrap.NewJoiner(c.rpcClient, c.config.NodeID, c.raftAddr, c.config.Voter)
 		err = backoff.Retry(func() error {
 			joinNodes := bootstrap.ResolveRemoteNodes(c.config.NodeSelector, c.config.NodeNameToPortMap)
-			// A node with existing state is not a wiped joiner; the barrier is
-			// irrelevant here, so the leader commit index is discarded.
+			// Node has existing state, not a wiped joiner; barrier discarded.
 			_, _, err := joiner.Do(bootstrapCtx, c.logger, joinNodes)
 			return err
 		}, backoff.WithContext(backoff.NewConstantBackOff(1*time.Second), bootstrapCtx))
@@ -191,8 +190,7 @@ func (c *Service) Open(ctx context.Context, db schema.Indexer) error {
 			c.config.Voter,
 			c.config.NodeSelector,
 			c.Raft.Ready,
-			// Hand the leader's committed index at join to the store as the
-			// wiped-joiner catch-up barrier; a no-op for non-wiped nodes.
+			// wiped-joiner catch-up barrier; no-op for non-wiped nodes.
 			c.Raft.store.SetJoinBarrier,
 		)
 		if err := bs.Do(

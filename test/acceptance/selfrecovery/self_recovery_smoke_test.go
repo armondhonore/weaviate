@@ -9,10 +9,9 @@
 //  CONTACT: hello@weaviate.io
 //
 
-// Package selfrecovery contains acceptance tests for the SELF_RECOVERY
-// shard re-hydration flow. Data-loss scenarios use tmpfs-backed /data
-// (test/docker.WithWeaviateTmpfsData) so a container stop wipes the
-// shard directory without root or external volume-management tooling.
+// Package selfrecovery holds acceptance tests for SELF_RECOVERY shard
+// re-hydration. Data-loss cases use tmpfs-backed /data so a container stop
+// wipes the shard dir without root or external volume tooling.
 package selfrecovery
 
 import (
@@ -112,11 +111,6 @@ func TestSelfRecoverySmokeWiring(t *testing.T) {
 	})
 }
 
-// TestSelfRecoveryDebugEndpointsDisabledWhenFeatureOff verifies that the
-// /debug/self-recovery/* operator endpoints and the test-only
-// /debug/raft/snapshot endpoint are NOT registered when
-// SELF_RECOVERY_ENABLED is unset/false — they must not be a surface (even
-// on the profiling port) on a node that doesn't use the feature.
 func TestSelfRecoveryDebugEndpointsDisabledWhenFeatureOff(t *testing.T) {
 	mainCtx := context.Background()
 	ctx, cancel := context.WithTimeout(mainCtx, 4*time.Minute)

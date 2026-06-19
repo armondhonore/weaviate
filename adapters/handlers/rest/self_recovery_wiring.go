@@ -16,9 +16,7 @@ import (
 	"github.com/weaviate/weaviate/cluster/schema"
 )
 
-// selfRecoverySchemaReader adapts schema.SchemaReader (a value type)
-// to selfrecovery.SchemaReader. Lives here to avoid a cycle from
-// selfrecovery -> cluster/schema.
+// selfRecoverySchemaReader adapts schema.SchemaReader to selfrecovery.SchemaReader, avoiding an import cycle.
 type selfRecoverySchemaReader struct {
 	r schema.SchemaReader
 }
@@ -27,8 +25,7 @@ func (a selfRecoverySchemaReader) ShardReplicas(class, shard string) ([]string, 
 	return a.r.ShardReplicas(class, shard)
 }
 
-// selfRecoveryDBPathResolver adapts *db.DB.ShardPath to
-// selfrecovery.PathResolver.
+// selfRecoveryDBPathResolver adapts *db.DB.ShardPath to selfrecovery.PathResolver.
 type selfRecoveryDBPathResolver struct {
 	db   *db.DB
 	root string // unused; reserved for future multi-root layouts

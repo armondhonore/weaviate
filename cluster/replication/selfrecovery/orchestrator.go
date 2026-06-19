@@ -9,12 +9,11 @@
 //  CONTACT: hello@weaviate.io
 //
 
-// Package selfrecovery triggers automatic SELF_RECOVERY replication
-// ops for shards whose local directories are missing at node startup.
-// Wired only into the startup path so newly-added empty replicas via
-// scale-out are not misinterpreted as data loss. The actual file copy
-// and state machine are handled by the existing replication FSM +
-// consumer; this package only probes peers and registers ops.
+// Package selfrecovery triggers automatic SELF_RECOVERY replication ops
+// for shards whose local directories are missing at node startup. Wired
+// only into the startup path so scale-out empty replicas aren't
+// misread as data loss; the file copy and state machine live in the
+// existing replication FSM + consumer.
 package selfrecovery
 
 import (
@@ -48,21 +47,16 @@ import (
 	"github.com/weaviate/weaviate/usecases/cluster"
 )
 
-// ErrSelfRecoveryCancelled flags an op the FSM reports as CANCELLED, so
-// runOne treats it as terminal (don't retry) rather than transient.
+// ErrSelfRecoveryCancelled marks a CANCELLED op as terminal so runOne won't retry.
 var ErrSelfRecoveryCancelled = errors.New("self-recovery op was cancelled")
 
-// ErrSelfRecoveryShardNotInSchema: requested (collection, shard) absent
-// from the local schema. REST handler maps it to 404.
+// ErrSelfRecoveryShardNotInSchema maps to 404 in the REST handler.
 var ErrSelfRecoveryShardNotInSchema = errors.New("shard not in local schema")
 
-// ErrSelfRecoveryShardAlreadyLive: live on-disk dir already exists, so
-// /restart would re-copy over a healthy shard. REST handler maps it to
-// 409. Operators must cancel any in-flight op and remove the dir by hand.
+// ErrSelfRecoveryShardAlreadyLive maps to 409 in the REST handler.
 var ErrSelfRecoveryShardAlreadyLive = errors.New("shard already has a live local directory; /restart is only valid while the shard is RECOVERING")
 
-// RaftEntryPoint is the subset of *cluster.Raft used by the orchestrator;
-// defined locally so tests can stub it.
+// RaftEntryPoint is the subset of *cluster.Raft used by the orchestrator.
 type RaftEntryPoint interface {
 	RegisterSelfRecovery(ctx context.Context, sourceNode, collection, shard, targetNode string) (strfmt.UUID, error)
 	GetReplicationDetailsByReplicationId(ctx context.Context, uuid strfmt.UUID) (api.ReplicationDetailsResponse, error)
@@ -85,8 +79,6 @@ type ShardRef struct {
 }
 
 // Orchestrator coordinates per-shard SELF_RECOVERY work on a single node.
-// It is constructed once at startup and submitted to as the index init
-// pass discovers shard directories that should be present but are not.
 type Orchestrator struct {
 	raft                   RaftEntryPoint
 	schema                 SchemaReader
@@ -103,51 +95,41 @@ type Orchestrator struct {
 	probeTimeout           time.Duration
 	probeBackoffMin        time.Duration
 	probeBackoffMax        time.Duration
-	restartTimeout         time.Duration  // caps Restart's cancel+settle loop
-	vanishedGracePeriod    time.Duration  // extra wait when a polled op vanishes
+	restartTimeout         time.Duration
+	vanishedGracePeriod    time.Duration
 	emptyFallbackHook      func(ShardRef) // nil unless overridden in tests
 	metrics                *Metrics
 
-	// Worker pool. Bounded queue caps goroutine fan-out when
-	// N>>concurrency shards need recovery (e.g. wiped node).
-	//
-	// closeMu serialises Submit's send on workQueue against Close's
-	// close of it; closed short-circuits Submit off the hot path.
-	// shutdownCtx is cancelled by Close so in-flight probes/polls bail.
+	// Bounded-queue worker pool. closeMu serialises Submit's send against
+	// Close's close of workQueue; shutdownCtx is cancelled by Close.
 	poolOnce            sync.Once
 	workQueue           chan submission
-	submitQueueCapacity int // defaultSubmitQueueCapacity unless overridden in tests
+	submitQueueCapacity int
 	closeMu             sync.RWMutex
 	closed              atomic.Bool
 	workerWg            sync.WaitGroup
 	shutdownCtx         context.Context
 	shutdownCancel      context.CancelFunc
 
-	// rng shuffles peer order; guarded by rngMu since probeAndDecide
-	// runs from multiple workers concurrently.
+	// rng shuffles peer order; guarded by rngMu (concurrent workers).
 	rngMu sync.Mutex
 	rng   *rand.Rand
 
-	// shardLocks serialises state-mutating ops on the same
-	// (collection, shard) across runOne and Restart — defends against
-	// concurrent /restart calls and a stale worker racing a new
-	// Restart. Keyed "collection/shard" -> *sync.Mutex; never shrinks
-	// (fine for self-recovery cardinalities).
+	// shardLocks serialises state-mutating ops per (collection, shard)
+	// across runOne and Restart. Keyed "collection/shard"; never shrinks.
 	shardLocks sync.Map
 }
 
 type submission struct {
 	ctx context.Context
 	ref ShardRef
-	// Captured at submit time (not via a shared flag) so a slow
-	// empty-fallback isn't misclassified if RAFT bootstrap completes
-	// mid-probe.
+	// captured at submit time so the classification can't flip if RAFT
+	// bootstrap completes mid-probe
 	fromBootstrap bool
 }
 
-// defaultSubmitQueueCapacity bounds the in-flight backlog; beyond it
-// Submit drops (logged + metric) so memory stays bounded on a wiped
-// node. Dropped shards fall back to normal init and retry on next restart.
+// defaultSubmitQueueCapacity bounds the in-flight backlog; over it Submit
+// drops, and dropped shards retry on next restart.
 const defaultSubmitQueueCapacity = 1024
 
 type Config struct {
@@ -159,20 +141,14 @@ type Config struct {
 	NodeName      string
 	Enabled       bool
 	Concurrency   int
-	// MaintenanceModeEnabled, when non-nil and true, makes Submit a
-	// no-op (no new recoveries during maintenance). Already-running
-	// recoveries finish.
+	// MaintenanceModeEnabled, when non-nil and true, makes Submit a no-op.
 	MaintenanceModeEnabled func() bool
-	// OnRecoveryComplete promotes the in-memory wrapper after the
-	// orchestrator's empty-fallback materialises an empty live dir.
-	// (The SELF_RECOVERY-op path doesn't need it; the consumer's
-	// LoadLocalShard handles the swap.)
+	// OnRecoveryComplete promotes the in-memory wrapper after empty-fallback
+	// materialises an empty live dir (the op path doesn't need it).
 	OnRecoveryComplete func(ctx context.Context, collection, shard string) error
 	Logger             logrus.FieldLogger
-	// PollInterval is FSM-polling cadence after registering an op. 5s if zero.
-	PollInterval time.Duration
-	// ProbeTimeout caps a single ListFiles probe RPC. 5s if zero.
-	ProbeTimeout time.Duration
+	PollInterval       time.Duration // FSM poll cadence; 5s if zero
+	ProbeTimeout       time.Duration // single ListFiles probe RPC; 5s if zero
 }
 
 func New(cfg Config) *Orchestrator {
@@ -215,23 +191,20 @@ func New(cfg Config) *Orchestrator {
 	}
 }
 
-// cryptoSeed seeds the peer-shuffle math/rand (non-security) so node
-// startups pick independent peer orderings without relying on time/pid.
+// cryptoSeed seeds the peer-shuffle math/rand so node startups pick
+// independent peer orderings without relying on time/pid.
 func cryptoSeed() int64 {
 	var b [8]byte
 	if _, err := cryptorand.Read(b[:]); err != nil {
-		// Unreachable on a sane OS; time+pid still distinct across nodes.
 		return time.Now().UnixNano() ^ int64(os.Getpid())
 	}
 	return int64(binary.LittleEndian.Uint64(b[:]))
 }
 
-// Submit asynchronously starts recovery for the shard. Returns false
+// Submit asynchronously starts recovery for the shard, returning false
 // when not queued (flag off, maintenance mode, or queue full). Callers
-// that installed a RecoveringShard wrapper MUST fall back to normal
-// shard init on false, else the shard stays load-blocked until the next
-// restart. fromBootstrap tags the op so a RAFT-bootstrap-window
-// empty-fallback is logged/counted less alarmingly (likely a fresh class).
+// that installed a RecoveringShard wrapper MUST fall back to normal shard
+// init on false, else the shard stays load-blocked until next restart.
 func (o *Orchestrator) Submit(ctx context.Context, ref ShardRef, fromBootstrap bool) bool {
 	if !o.enabled {
 		return false
@@ -245,11 +218,10 @@ func (o *Orchestrator) Submit(ctx context.Context, ref ShardRef, fromBootstrap b
 		return false
 	}
 	o.poolOnce.Do(o.initPool)
-	// Read lock covers the send so Close can't close workQueue under us;
-	// the closed check off-lock short-circuits the hot path.
 	if o.closed.Load() {
 		return false
 	}
+	// read lock so Close can't close workQueue under the send below
 	o.closeMu.RLock()
 	defer o.closeMu.RUnlock()
 	if o.closed.Load() {
@@ -272,30 +244,23 @@ func (o *Orchestrator) Submit(ctx context.Context, ref ShardRef, fromBootstrap b
 	}
 }
 
-// Enabled reports whether the SELF_RECOVERY feature flag is on, so
-// callers can gate wrapper installation before Submit (which no-ops off).
+// Enabled reports whether the SELF_RECOVERY feature flag is on.
 func (o *Orchestrator) Enabled() bool {
 	return o.enabled
 }
 
 // SubmitRecovery is the primitive-typed entry point for callers that
-// can't import this package without a cycle. See Submit for the
-// false-return contract.
+// can't import this package without a cycle. See Submit.
 func (o *Orchestrator) SubmitRecovery(ctx context.Context, collection, shard string, fromBootstrap bool) bool {
 	return o.Submit(ctx, ShardRef{Collection: collection, Shard: shard}, fromBootstrap)
 }
 
-// Restart cancels any in-flight SELF_RECOVERY op for (collection,
-// shard) on this node, waits for it to go terminal (so the copier won't
-// race the rmrf below), erases "<shard>.recovering/", then resubmits.
-// Bounded by restartTimeout; on timeout leaves the recovery dir intact
-// and returns ctx.Err().
-//
-// Rejects with ErrSelfRecoveryShardAlreadyLive when the live dir exists
-// (recovery already done) and ErrSelfRecoveryShardNotInSchema when the
-// shard isn't in the local schema.
+// Restart cancels any in-flight SELF_RECOVERY op for the shard, waits for
+// it to go terminal so the copier won't race the rmrf, erases
+// "<shard>.recovering/", then resubmits. Bounded by restartTimeout.
+// Rejects with ErrSelfRecoveryShardAlreadyLive when the live dir exists,
+// ErrSelfRecoveryShardNotInSchema when the shard isn't in the schema.
 func (o *Orchestrator) Restart(parentCtx context.Context, ref ShardRef) error {
-	// Refuse to touch RAFT ops or on-disk paths for unknown shards.
 	if o.schema != nil {
 		if _, err := o.schema.ShardReplicas(ref.Collection, ref.Shard); err != nil {
 			return fmt.Errorf("restart recovery: shard %s/%s: %w",
@@ -303,8 +268,6 @@ func (o *Orchestrator) Restart(parentCtx context.Context, ref ShardRef) error {
 				errors.Join(ErrSelfRecoveryShardNotInSchema, err))
 		}
 	}
-	// Serialise the cancel+erase+resubmit below against any worker or
-	// concurrent Restart on the same shard.
 	unlock := o.lockShard(ref)
 	defer unlock()
 	if o.pathResolver != nil {
@@ -345,12 +308,9 @@ func (o *Orchestrator) Restart(parentCtx context.Context, ref ShardRef) error {
 		"cancelled_ops": cancelled,
 	}).Warn("operator restarted self-recovery from scratch")
 
-	// WithoutCancel so the recovery goroutine outlives the HTTP-bound
-	// parentCtx (still inheriting its values). fromBootstrap=false: an
-	// operator restart is by definition past the RAFT bootstrap window.
+	// WithoutCancel so the recovery outlives the HTTP-bound parentCtx
 	if !o.Submit(context.WithoutCancel(parentCtx), ref, false) && o.Enabled() {
-		// Cancel+erase done but resubmit dropped (queue full); shard
-		// stays RECOVERING. Surface so the operator retries.
+		// cancel+erase done but resubmit dropped; shard stays RECOVERING
 		return errors.New("restart recovery: re-submission was dropped (in-flight queue full); retry shortly")
 	}
 	return nil
@@ -363,8 +323,7 @@ func (o *Orchestrator) RestartRecovery(ctx context.Context, collection, shard st
 }
 
 // cancelInflightSelfRecoveryOps cancels every non-terminal SELF_RECOVERY
-// op on (collection, shard) targeting this node. Returns the UUIDs
-// cancelled. A "not found" error means no ops at all and is success.
+// op on the shard targeting this node, returning the cancelled UUIDs.
 func (o *Orchestrator) cancelInflightSelfRecoveryOps(ctx context.Context, ref ShardRef) ([]strfmt.UUID, error) {
 	if o.raft == nil {
 		return nil, nil
@@ -391,19 +350,17 @@ func (o *Orchestrator) cancelInflightSelfRecoveryOps(ctx context.Context, ref Sh
 		if err := o.raft.CancelReplication(ctx, op.Uuid); err != nil {
 			return cancelled, fmt.Errorf("cancel op %s: %w", op.Uuid, err)
 		}
-		// Don't tick CompletedTotal{cancelled} here — runOne does it on
-		// observing the FSM's CANCELLED state, to avoid double-counting.
+		// runOne ticks CompletedTotal{cancelled} on observing CANCELLED;
+		// don't double-count here
 		cancelled = append(cancelled, op.Uuid)
 	}
 	return cancelled, nil
 }
 
-// HasInflightReplicationOp reports whether any non-terminal replication
-// op (COPY, MOVE, or SELF_RECOVERY) targets (collection, shard) on this
-// node. The startup hook calls it before installing a RecoveringShard
-// wrapper: otherwise a node restarting mid scale-out COPY would register
-// a duplicate SELF_RECOVERY op and clobber the resumed COPY's output on
-// rename. Callers should treat a non-nil error as "skip recovery".
+// HasInflightReplicationOp reports whether any non-terminal replication op
+// targets the shard on this node. The startup hook checks it first so a
+// node restarting mid scale-out COPY doesn't register a duplicate
+// SELF_RECOVERY op and clobber the resumed COPY. Treat errors as "skip".
 func (o *Orchestrator) HasInflightReplicationOp(ctx context.Context, collection, shard string) (bool, error) {
 	if o.raft == nil {
 		return false, nil
@@ -421,7 +378,6 @@ func (o *Orchestrator) HasInflightReplicationOp(ctx context.Context, collection,
 		}
 		switch api.ShardReplicationState(op.Status.State) {
 		case api.READY, api.CANCELLED:
-			// terminal — no longer touching the shard dir
 		default:
 			return true, nil
 		}
@@ -429,11 +385,9 @@ func (o *Orchestrator) HasInflightReplicationOp(ctx context.Context, collection,
 	return false, nil
 }
 
-// waitForOpTerminal polls the FSM until the op reaches READY or
-// CANCELLED. A vanished op (force-deleted upstream) is treated as
-// terminal but with an additional grace sleep so a still-running
-// consumer goroutine can observe the cancellation. Bounded by the
-// caller's ctx.
+// waitForOpTerminal polls the FSM until the op reaches READY or CANCELLED.
+// A vanished op is terminal, but with a grace sleep so a still-running
+// consumer goroutine can observe the cancellation.
 func (o *Orchestrator) waitForOpTerminal(ctx context.Context, uuid strfmt.UUID) error {
 	if o.raft == nil {
 		return nil
@@ -455,7 +409,6 @@ func (o *Orchestrator) waitForOpTerminal(ctx context.Context, uuid strfmt.UUID) 
 			case api.READY, api.CANCELLED:
 				return nil
 			case api.REGISTERED, api.HYDRATING, api.FINALIZING, api.DEHYDRATING:
-				// non-terminal — keep polling
 			}
 		}
 		select {
@@ -466,10 +419,8 @@ func (o *Orchestrator) waitForOpTerminal(ctx context.Context, uuid strfmt.UUID) 
 	}
 }
 
-// CleanupOrphanRecoveryDirs removes "<shard>.recovering/" dirs whose
-// live "<shard>/" sibling exists. Reclaims disk after a
-// downgrade-then-upgrade cycle. In-flight recoveries (no sibling) are
-// untouched.
+// CleanupOrphanRecoveryDirs removes "<shard>.recovering/" dirs whose live
+// "<shard>/" sibling exists; in-flight recoveries (no sibling) are kept.
 func (o *Orchestrator) CleanupOrphanRecoveryDirs(rootDataPath string) ([]string, error) {
 	const suffix = api.RecoveryFolderSuffix
 	if rootDataPath == "" {
@@ -513,17 +464,15 @@ func (o *Orchestrator) CleanupOrphanRecoveryDirs(rootDataPath string) ([]string,
 	return removed, nil
 }
 
-// AcceptEmpty is the operator escape hatch for the catastrophic-wipe
-// case (no peer has the data): erases "<shard>.recovering/", creates an
-// empty "<shard>/", and promotes the wrapper so the shard is serviceable
-// (else it stays load-blocked behind the RecoveringShard wrapper). Does
-// NOT cancel in-flight RAFT ops — operator should cancel first.
+// AcceptEmpty is the operator escape hatch for the catastrophic-wipe case:
+// erases "<shard>.recovering/", creates an empty "<shard>/", and promotes
+// the wrapper so the shard is serviceable. Does NOT cancel in-flight RAFT
+// ops — operator should cancel first.
 func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, error) {
 	if o.pathResolver == nil {
 		return "", errors.New("accept-empty: no PathResolver configured")
 	}
-	// Refuse unknown (collection, shard) so the endpoint can't create
-	// arbitrary paths under the data root.
+	// refuse unknown shards so the endpoint can't create arbitrary paths
 	if o.schema != nil {
 		if _, err := o.schema.ShardReplicas(ref.Collection, ref.Shard); err != nil {
 			return "", fmt.Errorf("accept-empty: shard %s/%s: %w",
@@ -531,8 +480,6 @@ func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, e
 				errors.Join(ErrSelfRecoveryShardNotInSchema, err))
 		}
 	}
-	// Serialise the erase+create+promote below against a worker or a
-	// concurrent Restart/AcceptEmpty on the same shard (same lock those take).
 	unlock := o.lockShard(ref)
 	defer unlock()
 	livePath := o.pathResolver.ShardPath(ref.Collection, ref.Shard)
@@ -543,7 +490,6 @@ func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, e
 			return "", fmt.Errorf("remove recovery dir %q: %w", recoveryPath, err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		// EACCES, EIO, ELOOP etc. — surface so the operator sees them.
 		return "", fmt.Errorf("stat recovery dir %q: %w", recoveryPath, err)
 	}
 	if err := os.MkdirAll(livePath, 0o755); err != nil {
@@ -552,8 +498,6 @@ func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, e
 	if err := diskio.Fsync(filepath.Dir(livePath)); err != nil {
 		return "", fmt.Errorf("fsync parent of %q: %w", livePath, err)
 	}
-	// Promote the wrapper out of RECOVERING; mirrors runOne's
-	// empty-fallback path.
 	if o.onRecoveryComplete != nil {
 		if err := o.onRecoveryComplete(ctx, ref.Collection, ref.Shard); err != nil {
 			return "", fmt.Errorf("accept-empty: promote in-memory wrapper for %s/%s: %w",
@@ -574,14 +518,11 @@ func (o *Orchestrator) AcceptEmpty(ctx context.Context, ref ShardRef) (string, e
 
 // runOne is the per-shard worker: probe peers, act on the decision, and
 // back off & retry on transient errors up to maxAttempts. On give-up the
-// shard is left in RECOVERING — operators recover via the
-// /debug/self-recovery/{restart,accept-empty} endpoints.
+// shard is left in RECOVERING for operator recovery via the endpoints.
 func (o *Orchestrator) runOne(ctx context.Context, ref ShardRef, fromBootstrap bool) {
-	// Serialise with Restart and other workers on the same shard.
 	unlock := o.lockShard(ref)
 	defer unlock()
-	// Bind the per-op ctx to the orchestrator's shutdown ctx so probes
-	// and FSM polls bail when Close fires.
+	// bind per-op ctx to shutdownCtx so probes/polls bail when Close fires
 	ctx, cancel := mergedCtx(ctx, o.shutdownCtx)
 	defer cancel()
 
@@ -656,8 +597,7 @@ func (o *Orchestrator) runOne(ctx context.Context, ref ShardRef, fromBootstrap b
 	}
 }
 
-// recordOutcome ticks completed_total and duration_seconds with the
-// terminal label (success|failure|empty_fallback|cancelled). Nil-safe.
+// recordOutcome ticks completed_total and duration_seconds. Nil-safe.
 func (o *Orchestrator) recordOutcome(completedResult, durationResult string, startedAt time.Time) {
 	if o.metrics == nil {
 		return
@@ -666,11 +606,9 @@ func (o *Orchestrator) recordOutcome(completedResult, durationResult string, sta
 	o.metrics.DurationSeconds.WithLabelValues(durationResult).Observe(time.Since(startedAt).Seconds())
 }
 
-// handleRegisterDecision registers a SELF_RECOVERY op and polls it to a
-// terminal state. Returns done=true when nothing further should be
-// attempted (the op reached READY, or was operator-cancelled /
-// force-deleted), retry=true when a transient error means the caller
-// should back off and probe again.
+// handleRegisterDecision registers a SELF_RECOVERY op and polls it to
+// terminal. done=true means nothing more to attempt (READY/cancelled/
+// force-deleted); retry=true means back off and probe again.
 func (o *Orchestrator) handleRegisterDecision(ctx context.Context, ref ShardRef, decision probeDecision,
 	startedAt time.Time, logger logrus.FieldLogger,
 ) (done, retry bool) {
@@ -687,8 +625,8 @@ func (o *Orchestrator) handleRegisterDecision(ctx context.Context, ref ShardRef,
 		}).Info("self-recovery completed")
 		return true, false
 	}
-	// Force-delete (class/tenant removed) and operator cancel are both
-	// terminal: retrying would re-register a fresh op and negate them.
+	// force-delete and operator cancel are terminal; retrying would
+	// re-register a fresh op and negate them
 	switch {
 	case errors.Is(err, replicationtypes.ErrReplicationOperationNotFound):
 		logger.WithError(err).WithField("source_node", decision.sourceNode).
@@ -708,10 +646,9 @@ func (o *Orchestrator) handleRegisterDecision(ctx context.Context, ref ShardRef,
 }
 
 // handleEmptyFallback materialises an empty live shard dir, promotes the
-// in-memory wrapper, and records the outcome. fromBootstrap selects the
-// gentler log/metric treatment for the RAFT-bootstrap-window case (an
-// all-peers-empty answer there most likely means a class was added during
-// this node's downtime, not data loss).
+// wrapper, and records the outcome. fromBootstrap selects the gentler
+// log/metric treatment (all-peers-empty during bootstrap most likely
+// means a class added during downtime, not data loss).
 func (o *Orchestrator) handleEmptyFallback(ctx context.Context, ref ShardRef, decision probeDecision,
 	startedAt time.Time, fromBootstrap bool, logger logrus.FieldLogger,
 ) {
@@ -720,8 +657,8 @@ func (o *Orchestrator) handleEmptyFallback(ctx context.Context, ref ShardRef, de
 		o.recordOutcome("failure", "failure", startedAt)
 		return
 	}
-	// Promote the wrapper. If this fails the shard would be stranded in
-	// RECOVERING, so record failure and bail rather than misreport success.
+	// a failed promote would strand the shard in RECOVERING; record
+	// failure rather than misreport success
 	if o.onRecoveryComplete != nil {
 		if err := o.onRecoveryComplete(ctx, ref.Collection, ref.Shard); err != nil {
 			logger.WithError(err).Error("self-recovery: promote after empty-fallback failed")
@@ -787,12 +724,11 @@ func (o *Orchestrator) probeAndDecide(ctx context.Context, ref ShardRef) (probeD
 		}
 	}
 	if len(peers) == 0 {
-		// Only us per schema: nothing to recover from.
+		// only us per schema: nothing to recover from
 		return probeDecision{action: actionEmptyFallback, probedPeers: nil}, nil
 	}
 
-	// Shuffle so recovering nodes don't all pick the same data-bearing
-	// peer (see cryptoSeed for the RNG rationale).
+	// shuffle so recovering nodes don't all pick the same data-bearing peer
 	o.rngMu.Lock()
 	o.rng.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	o.rngMu.Unlock()
@@ -854,7 +790,7 @@ func (o *Orchestrator) probeAndDecide(ctx context.Context, ref ShardRef) (probeD
 		}, nil
 	}
 	if anyUnreachable {
-		// Don't silently create empty when probes were inconclusive.
+		// don't create empty when probes were inconclusive
 		return probeDecision{action: actionRetry, probedPeers: probedPeers}, nil
 	}
 	if anyDefinitiveEmpty {
@@ -864,8 +800,7 @@ func (o *Orchestrator) probeAndDecide(ctx context.Context, ref ShardRef) (probeD
 }
 
 // probePeer reports whether peer has data for the shard. definitive=true
-// means the peer answered (with or without data); err != nil means
-// transport/timeout — caller should retry later, not fall through.
+// means the peer answered; err != nil means transport/timeout (retry).
 func (o *Orchestrator) probePeer(ctx context.Context, peer string, ref ShardRef) (hasData bool, definitive bool, err error) {
 	addr := o.nodeSelector.NodeAddress(peer)
 	if addr == "" {
@@ -889,9 +824,7 @@ func (o *Orchestrator) probePeer(ctx context.Context, peer string, ref ShardRef)
 		ShardName: ref.Shard,
 	})
 	if err != nil {
-		// gRPC status drives the decision: NotFound = definitive
-		// no-data; Unavailable = peer itself recovering / busy →
-		// transient. Anything else is treated as transport error.
+		// NotFound = definitive no-data; Unavailable = peer busy (transient)
 		if st, ok := status.FromError(err); ok {
 			switch st.Code() {
 			case codes.NotFound:
@@ -899,16 +832,12 @@ func (o *Orchestrator) probePeer(ctx context.Context, peer string, ref ShardRef)
 			case codes.Unavailable:
 				return false, false, fmt.Errorf("peer %q unavailable: %w", peer, err)
 			default:
-				// other codes fall through to substring fallback / generic
 			}
 		}
-		// Older peers don't carry typed codes — fall back to
-		// substring matching so a rolling upgrade doesn't break.
+		// rolling-upgrade fallback for peers without typed codes
 		if isShardAbsentErr(err) {
 			return false, true, nil
 		}
-		// Shard exists but isn't paused: a positive answer for a
-		// read-only probe (see isShardPresentButNotPausedErr).
 		if isShardPresentButNotPausedErr(err) {
 			return true, true, nil
 		}
@@ -922,8 +851,7 @@ func (o *Orchestrator) probePeer(ctx context.Context, peer string, ref ShardRef)
 
 // isShardAbsentErr is the rolling-upgrade fallback for peers not yet
 // sending typed gRPC codes. Match only shard-specific phrasings — a bare
-// "not found" would misclassify e.g. "file X not found" and wrongly
-// trigger empty-fallback.
+// "not found" would misclassify e.g. "file X not found".
 func isShardAbsentErr(err error) bool {
 	if err == nil {
 		return false
@@ -940,10 +868,9 @@ func isShardAbsentErr(err error) bool {
 	return false
 }
 
-// isShardPresentButNotPausedErr matches the ListFiles error returned
-// when the shard exists but file activity has not been paused. The
-// probe doesn't pause (the consumer does, when the op runs), so this
-// is a positive answer: the source has the shard.
+// isShardPresentButNotPausedErr matches the ListFiles error when the shard
+// exists but isn't paused. The probe doesn't pause, so this is a positive
+// answer: the source has the shard.
 func isShardPresentButNotPausedErr(err error) bool {
 	if err == nil {
 		return false
@@ -952,9 +879,8 @@ func isShardPresentButNotPausedErr(err error) bool {
 }
 
 // registerAndPoll registers a SELF_RECOVERY op and polls the FSM until
-// terminal state. nil on READY, error on CANCELLED or poll failure.
-// Returns ErrReplicationOperationNotFound if the op vanished from the
-// FSM (e.g. operator-driven force-delete after class/tenant deletion).
+// terminal: nil on READY, error on CANCELLED or poll failure,
+// ErrReplicationOperationNotFound if the op vanished (force-deleted).
 func (o *Orchestrator) registerAndPoll(ctx context.Context, ref ShardRef, sourceNode string) error {
 	uuid, err := o.raft.RegisterSelfRecovery(ctx, sourceNode, ref.Collection, ref.Shard, o.nodeName)
 	if err != nil {
@@ -969,8 +895,8 @@ func (o *Orchestrator) registerAndPoll(ctx context.Context, ref ShardRef, source
 		"op_uuid":     uuid,
 	}).Info("self-recovery op registered; polling for completion")
 
-	// Tolerate a few consecutive not-founds (a leader change can cause
-	// them) before concluding the op was force-deleted.
+	// tolerate transient not-founds (e.g. leader change) before concluding
+	// the op was force-deleted
 	const notFoundThreshold = 3
 	notFoundCount := 0
 
@@ -998,14 +924,13 @@ func (o *Orchestrator) registerAndPoll(ctx context.Context, ref ShardRef, source
 			case api.CANCELLED:
 				return fmt.Errorf("self-recovery op %s: %w", uuid, ErrSelfRecoveryCancelled)
 			case api.REGISTERED, api.HYDRATING, api.FINALIZING, api.DEHYDRATING:
-				// non-terminal — keep polling
 			}
 		}
 	}
 }
 
 // emptyFallback creates an empty live shard dir; reached only when all
-// probed peers were reachable and definitively reported no data.
+// probed peers definitively reported no data.
 func (o *Orchestrator) emptyFallback(ref ShardRef) error {
 	if o.pathResolver == nil {
 		return errors.New("empty-fallback: no PathResolver configured")
@@ -1020,8 +945,7 @@ func (o *Orchestrator) emptyFallback(ref ShardRef) error {
 	return nil
 }
 
-// initPool spawns the worker pool on first Submit; Concurrency workers
-// (1 if non-positive) draining a queue of submitQueueCapacity.
+// initPool spawns the worker pool on first Submit.
 func (o *Orchestrator) initPool() {
 	n := 1
 	if o.concurrency > 0 {
@@ -1031,9 +955,8 @@ func (o *Orchestrator) initPool() {
 	if capacity <= 0 {
 		capacity = defaultSubmitQueueCapacity
 	}
-	// Under closeMu (which Close also holds to read workQueue/Wait on workerWg)
-	// so a Close racing the first Submit can't data-race these writes; bail if
-	// Close already won, since the pool would never be drained or closed.
+	// under closeMu so a Close racing the first Submit can't data-race
+	// these writes; bail if Close already won
 	o.closeMu.Lock()
 	if o.closed.Load() {
 		o.closeMu.Unlock()
@@ -1052,11 +975,8 @@ func (o *Orchestrator) initPool() {
 	}
 }
 
-// Close stops new submissions, cancels shutdownCtx, and waits for
-// workers to drain (bounded by ctx). On ctx deadline returns ctx.Err()
-// while workers may still be running (they bail at the next cancellation
-// check). Idempotent; safe before the pool is initialised. After Close,
-// Submit returns false.
+// Close stops new submissions, cancels shutdownCtx, and waits for workers
+// to drain (bounded by ctx). Idempotent; safe before the pool is inited.
 func (o *Orchestrator) Close(ctx context.Context) error {
 	o.closeMu.Lock()
 	if !o.closed.CompareAndSwap(false, true) {
@@ -1093,18 +1013,14 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// mergedCtx returns a context that is cancelled when EITHER parent or
-// sibling is cancelled. Used in runOne to bind the per-op ctx to the
-// orchestrator's shutdown ctx so workers bail when Close fires.
+// mergedCtx returns a context cancelled when EITHER parent or sibling is.
 func mergedCtx(parent, sibling context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 	stop := context.AfterFunc(sibling, cancel)
 	return ctx, func() { stop(); cancel() }
 }
 
-// lockShard acquires the per-shard mutex for ref and returns a release
-// closure (use with `defer`). Callers serialised this way: runOne
-// (worker) and Restart (operator endpoint).
+// lockShard acquires the per-shard mutex and returns a release closure.
 func (o *Orchestrator) lockShard(ref ShardRef) func() {
 	key := ref.Collection + "/" + ref.Shard
 	m, _ := o.shardLocks.LoadOrStore(key, &sync.Mutex{})

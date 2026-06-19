@@ -25,11 +25,6 @@ import (
 	"github.com/weaviate/weaviate/cluster/proto/api"
 )
 
-// TestRewriteRelPathToLocalShard exercises the path-rewriter used by
-// CopyReplicaFilesToLocalShard so files reported by the source under
-// "<lower(coll)>/<srcShard>/..." land at "<lower(coll)>/<dstShard>/..."
-// when an override is supplied (e.g. SELF_RECOVERY's ".recovering"
-// sibling directory).
 func TestRewriteRelPathToLocalShard(t *testing.T) {
 	c := &Copier{rootDataPath: "/data", logger: logrus.New()}
 
@@ -76,17 +71,12 @@ func TestRewriteRelPathToLocalShard(t *testing.T) {
 	}
 }
 
-// TestValidateLocalFolder_MissingBasePath: a missing destination dir (an
-// empty-manifest source shard never created it) must validate as a no-op,
-// not fail the recovery.
 func TestValidateLocalFolder_MissingBasePath(t *testing.T) {
 	root := t.TempDir()
 	c := &Copier{rootDataPath: root, logger: logrus.New()}
 	require.NoError(t, c.validateLocalFolder("MyClass", "shard1", api.RecoveryFolderName("shard1"), nil))
 }
 
-// TestPromoteRecoveryFolder verifies the rename + parent fsync path and
-// the idempotent variants the recovery flow relies on across crashes.
 func TestPromoteRecoveryFolder(t *testing.T) {
 	root := t.TempDir()
 	c := &Copier{rootDataPath: root, logger: logrus.New()}
@@ -114,18 +104,12 @@ func TestPromoteRecoveryFolder(t *testing.T) {
 	})
 
 	t.Run("erases_stale_recovery_dir_when_live_dir_already_exists", func(t *testing.T) {
-		// Setup: both dirs present (e.g. an earlier promote partially
-		// succeeded — rename happened, parent fsync survived, then
-		// orchestrator crashed before clearing local state, and on the
-		// next attempt the recovery dir is rebuilt from another retry).
 		require.NoError(t, os.MkdirAll(recoveryPath, 0o755))
 		require.NoError(t, os.MkdirAll(livePath, 0o755))
 		require.NoError(t, os.WriteFile(path.Join(livePath, "live-marker"), []byte("live"), 0o644))
 
 		require.NoError(t, c.PromoteRecoveryFolder(collection, shard))
 
-		// Stale recovery dir is erased; the live dir is the canonical
-		// state and remains untouched.
 		_, statErr := os.Stat(recoveryPath)
 		require.True(t, errors.Is(statErr, fs.ErrNotExist), "stale recovery dir should be erased, got %v", statErr)
 		_, err := os.Stat(path.Join(livePath, "live-marker"))
@@ -135,16 +119,11 @@ func TestPromoteRecoveryFolder(t *testing.T) {
 	})
 
 	t.Run("idempotent_when_live_exists_and_recovery_missing", func(t *testing.T) {
-		// Crash-after-rename scenario: a previous attempt successfully
-		// renamed the recovery dir into place but the consumer crashed
-		// before the op reached READY. RAFT log replay re-invokes
-		// PromoteRecoveryFolder; this must be a no-op success.
 		require.NoError(t, os.MkdirAll(livePath, 0o755))
 		require.NoError(t, os.WriteFile(path.Join(livePath, "live-marker"), []byte("live"), 0o644))
 
 		require.NoError(t, c.PromoteRecoveryFolder(collection, shard))
 
-		// Live dir must be untouched; no recovery dir should appear.
 		_, err := os.Stat(path.Join(livePath, "live-marker"))
 		require.NoError(t, err, "live dir contents must not be touched")
 		_, err = os.Stat(recoveryPath)
@@ -159,10 +138,6 @@ func TestPromoteRecoveryFolder(t *testing.T) {
 	})
 
 	t.Run("errors_when_path_is_a_file_not_a_directory", func(t *testing.T) {
-		// Operator mistake / filesystem corruption: a regular file
-		// sits where the live shard dir should be. dirExists must
-		// surface this rather than silently treat the file as a
-		// present shard dir (which would erase the recovery dir).
 		parent := filepath.Dir(livePath)
 		require.NoError(t, os.MkdirAll(parent, 0o755))
 		require.NoError(t, os.WriteFile(livePath, []byte("oops"), 0o644))
@@ -172,7 +147,6 @@ func TestPromoteRecoveryFolder(t *testing.T) {
 		err := c.PromoteRecoveryFolder(collection, shard)
 		require.Error(t, err, "must error when a non-dir occupies the live path")
 
-		// Recovery dir must NOT be erased on this error path.
 		_, statErr := os.Stat(path.Join(recoveryPath, "marker"))
 		require.NoError(t, statErr, "recovery dir must be left intact on stat error")
 

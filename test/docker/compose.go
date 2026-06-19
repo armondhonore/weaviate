@@ -577,8 +577,7 @@ func (d *Compose) WithMCPConfigFile(hostPath, containerPath string) *Compose {
 }
 
 func (d *Compose) WithWeaviateWithDebugPort() *Compose {
-	// Default to 1 node only if no size was set; otherwise this would
-	// overwrite e.g. WithWeaviateCluster(3) and break RF=3 operations.
+	// Default to 1 node only if no size was set, else this clobbers WithWeaviateCluster(N).
 	if !d.withWeaviateCluster {
 		d.With1NodeCluster()
 	}
@@ -586,10 +585,9 @@ func (d *Compose) WithWeaviateWithDebugPort() *Compose {
 	return d
 }
 
-// WithWeaviateTmpfsData mounts /data as a tmpfs in every weaviate
-// container, wiped on stop and fresh on start. Self-recovery tests need
-// this for true data-loss semantics: rm-while-running races weaviate's
-// open-fd writes, which recreate files between rm and SIGKILL.
+// WithWeaviateTmpfsData mounts /data as a tmpfs in every weaviate container,
+// wiped on stop. Gives data-loss tests true semantics: rm-while-running races
+// weaviate's open-fd writes, which recreate files between rm and SIGKILL.
 func (d *Compose) WithWeaviateTmpfsData() *Compose {
 	d.withWeaviateTmpfsData = true
 	return d

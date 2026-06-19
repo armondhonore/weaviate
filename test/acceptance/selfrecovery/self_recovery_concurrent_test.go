@@ -34,11 +34,6 @@ import (
 	"github.com/weaviate/weaviate/test/helper/sample-schema/articles"
 )
 
-// TestSelfRecoveryViaLogReplayConcurrentChanges verifies a wiped node that
-// rejoins via log replay (no forced snapshot) fully converges while the cluster
-// keeps taking new objects, a property add, and a brand-new collection during
-// the recovery window. async replication heals the in-flight object delta;
-// the SELF_RECOVERY op assertion proves the initial data came via recovery.
 func TestSelfRecoveryViaLogReplayConcurrentChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()

@@ -51,7 +51,6 @@ func TestCopyReplicaFiles(t *testing.T) {
 		write(remoteTmpDir, f.rel, f.buf)
 	}
 
-	// unexpected local file that the copy must delete
 	_ = write(localTmpDir, "collection/shard/old", []byte("OLD"))
 
 	mockClient := NewMockFileReplicationServiceClient(t)
@@ -140,11 +139,6 @@ func TestCopyReplicaFiles(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-// TestCopyReplicaFilesToLocalShard_RecoveryOverride: with a
-// localShardOverride ("<shard>.recovering", as SELF_RECOVERY uses),
-// files reported under "<collection>/<shard>/..." must land under
-// "<collection>/<shard>.recovering/...", leaving the live shard dir
-// untouched.
 func TestCopyReplicaFilesToLocalShard_RecoveryOverride(t *testing.T) {
 	remoteTmpDir := t.TempDir()
 	localTmpDir := t.TempDir()
@@ -167,8 +161,6 @@ func TestCopyReplicaFilesToLocalShard_RecoveryOverride(t *testing.T) {
 		write(remoteTmpDir, f.rel, f.buf)
 	}
 
-	// A stale file in the recovery dir that must be cleaned up; plus a
-	// file in the *live* dir that must NOT be touched.
 	_ = write(localTmpDir, "collection/shard.recovering/old", []byte("OLD"))
 	_ = write(localTmpDir, "collection/shard/live-marker", []byte("LIVE"))
 
@@ -223,19 +215,16 @@ func TestCopyReplicaFilesToLocalShard_RecoveryOverride(t *testing.T) {
 
 	require.NoError(t, c.CopyReplicaFilesToLocalShard(context.Background(), "node1", "collection", "shard", "shard.recovering", 0))
 
-	// Files landed in the .recovering sibling, not the live dir.
 	for _, f := range remoteFiles {
-		relWithinShard := f.rel[len("collection/shard/"):] // e.g. "fileA", "nested/fileB"
+		relWithinShard := f.rel[len("collection/shard/"):]
 		b, err := os.ReadFile(filepath.Join(localTmpDir, "collection", "shard.recovering", relWithinShard))
 		require.NoError(t, err, "expected collection/shard.recovering/%s", relWithinShard)
 		require.Equal(t, f.buf, b)
 		_, err = os.Stat(filepath.Join(localTmpDir, "collection", "shard", relWithinShard))
 		require.ErrorIs(t, err, os.ErrNotExist, "copied file must not appear under the live shard dir")
 	}
-	// Stale file in the recovery dir was cleaned up.
 	_, err := os.Stat(filepath.Join(localTmpDir, "collection/shard.recovering/old"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	// The live shard dir was left completely untouched.
 	b, err := os.ReadFile(filepath.Join(localTmpDir, "collection/shard/live-marker"))
 	require.NoError(t, err)
 	require.Equal(t, []byte("LIVE"), b)

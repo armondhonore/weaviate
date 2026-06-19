@@ -58,13 +58,9 @@ type GlobalConfig struct {
 
 	ReplicationGRPCEnabled *runtime.DynamicValue[bool] `json:"replication_grpc_enabled" yaml:"replication_grpc_enabled"`
 
-	// SELF_RECOVERY env-only, read at startup. Enabled gates orchestrator
-	// wiring in MakeAppState; Concurrency sets the worker-pool size once
-	// at first Submit. Neither is hot-reloadable.
+	// SELF_RECOVERY: env-only, read at startup, not hot-reloadable.
 	SelfRecoveryEnabled     bool `json:"self_recovery_enabled" yaml:"self_recovery_enabled"`
 	SelfRecoveryConcurrency int  `json:"self_recovery_concurrency" yaml:"self_recovery_concurrency"`
-	// SelfRecoveryBarrierTimeout bounds how long a wiped joiner waits without
-	// apply progress at its catch-up barrier before loading eagerly. 0 ⇒
-	// built-in default. Env-only, read at startup.
+	// Time a wiped joiner waits without apply progress at its catch-up barrier before loading eagerly. 0 ⇒ default.
 	SelfRecoveryBarrierTimeout time.Duration `json:"self_recovery_barrier_timeout" yaml:"self_recovery_barrier_timeout"`
 }

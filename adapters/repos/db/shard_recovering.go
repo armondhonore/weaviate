@@ -24,17 +24,13 @@ import (
 	"github.com/weaviate/weaviate/usecases/monitoring"
 )
 
-// RecoveringShard wraps a LazyLoadShard for SELF_RECOVERY. Until promoted
-// via Load (by the consumer's LoadLocalShard or the orchestrator's
-// empty-fallback), inner Load is blocked with ErrShardRecovering so a lazy
-// load can't MkdirAll an empty shard before the copy-and-rename completes,
-// and GetStatus reports RECOVERING. This is local defense-in-depth; the
-// replication FSM read filter handles cluster-wide routing exclusion.
+// RecoveringShard wraps a LazyLoadShard for SELF_RECOVERY. Until promoted via
+// Load, inner Load is blocked with ErrShardRecovering so a lazy load can't
+// MkdirAll an empty shard before the copy-and-rename completes, and GetStatus
+// reports RECOVERING.
 //
-// IMPORTANT: while blocked, any inherited data-path method going through
-// mustLoad/mustLoadCtx (Store, NotifyReady, put*/delete*/... internals)
-// PANICS by design — reaching one is a routing bug. Iterating callers must
-// skip recovering shards (loaded accessors, or IsRecovering()). See
+// While blocked, any inherited data-path method going through mustLoad PANICS
+// by design; iterating callers must skip recovering shards. See
 // docs/self-recovery.md ("Limitations").
 type RecoveringShard struct {
 	*LazyLoadShard
@@ -53,8 +49,7 @@ func NewRecoveringShard(ctx context.Context, promMetrics *monitoring.PrometheusM
 	return &RecoveringShard{LazyLoadShard: inner}
 }
 
-// Load shadows LazyLoadShard.Load: clears the block, then loads. After it
-// returns nil the wrapper behaves like a normal LazyLoadShard.
+// Load clears the recovery block, then loads.
 func (r *RecoveringShard) Load(ctx context.Context) error {
 	r.clearLoadBlock()
 	return r.LazyLoadShard.Load(ctx)
@@ -66,8 +61,7 @@ func (r *RecoveringShard) IsRecovering() bool {
 	return !r.loaded
 }
 
-// GetStatus shadows LazyLoadShard.GetStatus (which would report
-// LAZY_LOADING) so /nodes can surface RECOVERING distinctly.
+// GetStatus reports RECOVERING (not LAZY_LOADING) while unloaded.
 func (r *RecoveringShard) GetStatus() storagestate.Status {
 	r.mutex.Lock()
 	loaded := r.loaded

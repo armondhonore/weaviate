@@ -32,8 +32,6 @@ import (
 	"github.com/weaviate/weaviate/test/helper/sample-schema/articles"
 )
 
-// hasSelfRecoveryOp reports whether the replication-op list for targetNode
-// contains a SELF_RECOVERY op.
 func hasSelfRecoveryOp(t *testing.T, targetNode string) (bool, error) {
 	body, err := helper.Client(t).Replication.ListReplication(
 		replication.NewListReplicationParams().WithTargetNode(&targetNode), nil)
@@ -48,11 +46,6 @@ func hasSelfRecoveryOp(t *testing.T, targetNode string) (bool, error) {
 	return false, nil
 }
 
-// TestSelfRecoveryViaLogReplay verifies self-recovery fires for a wiped node
-// that rejoins purely via RAFT log replay — no snapshot is ever produced
-// (default RAFT_SNAPSHOT_THRESHOLD/RAFT_TRAILING_LOGS, no /debug/raft/snapshot
-// call). It also pins the negatives: creating a fresh collection on a healthy
-// cluster, and a plain restart with data intact, must never trigger recovery.
 func TestSelfRecoveryViaLogReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -182,10 +175,6 @@ func TestSelfRecoveryViaLogReplay(t *testing.T) {
 	})
 }
 
-// TestSelfRecoveryViaLogReplayMultiTenant verifies the same log-replay
-// recovery for multi-tenant tenant shards: the startup DB-load pass rebuilds
-// the index from the caught-up schema and iterates every HOT tenant shard, so
-// a wiped node recovers all of its tenant shards.
 func TestSelfRecoveryViaLogReplayMultiTenant(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()

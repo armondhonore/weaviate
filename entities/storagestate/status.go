@@ -23,9 +23,7 @@ const (
 	StatusLazyLoading Status = "LAZY_LOADING"
 	StatusReady       Status = "READY"
 	StatusShutdown    Status = "SHUTDOWN"
-	// StatusRecovering: local data is being re-hydrated from a peer
-	// (SELF_RECOVERY); reads/writes are routed to other replicas. See
-	// RecoveringShard and docs/self-recovery.md.
+	// StatusRecovering: local data is re-hydrating from a peer (SELF_RECOVERY); reads/writes routed elsewhere.
 	StatusRecovering Status = "RECOVERING"
 )
 

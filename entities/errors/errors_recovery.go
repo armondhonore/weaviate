@@ -17,20 +17,15 @@ import (
 	"github.com/pkg/errors"
 )
 
-// ErrShardRecovering: shard data is missing locally and being copied
-// from a peer (SELF_RECOVERY). Defense-in-depth for callers that
-// bypass the router (which already filters via the replication FSM).
+// ErrShardRecovering: shard data is missing locally and being copied from a peer (SELF_RECOVERY).
 var ErrShardRecovering = errors.New("shard recovering from peer")
 
 func IsShardRecovering(err error) bool {
 	return errors.Is(err, ErrShardRecovering)
 }
 
-// startupDBLoadKey marks a ctx as the one-shot startup DB-load pass
-// (reloadDBFromSchema -> ReloadLocalDB, after schema catch-up via snapshot
-// install or log replay). It distinguishes "load a shard the schema says
-// should exist" (a SELF_RECOVERY candidate when the dir is missing) from
-// "create a brand-new runtime shard" (where a missing dir is normal).
+// startupDBLoadKey marks the startup DB-load pass: a missing shard dir is a SELF_RECOVERY candidate,
+// not a brand-new runtime shard (where missing is normal).
 type startupDBLoadKey struct{}
 
 // WithStartupDBLoad tags the ctx as the startup DB-load pass.

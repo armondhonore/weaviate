@@ -34,11 +34,9 @@ import (
 	"github.com/weaviate/weaviate/test/helper/sample-schema/articles"
 )
 
-// forceRaftSnapshot POSTs /debug/raft/snapshot (synchronous
-// raft.Snapshot()) to guarantee a snapshot before wiping a peer, so the
-// rejoin goes through InstallSnapshot → Restore → reloadDBFromSchema →
-// the SELF_RECOVERY hook. Requires WithWeaviateWithDebugPort() — /debug/*
-// is served on the profiling port, not the main API port.
+// forceRaftSnapshot forces a snapshot before a wipe so the rejoin goes through
+// InstallSnapshot. Requires WithWeaviateWithDebugPort: /debug/* is on the
+// profiling port, not the main API port.
 func forceRaftSnapshot(ctx context.Context, t *testing.T, compose *docker.DockerCompose, idx int) {
 	t.Helper()
 	c, err := compose.ContainerAt(idx)
@@ -54,14 +52,6 @@ func forceRaftSnapshot(ctx context.Context, t *testing.T, compose *docker.Docker
 	require.Less(t, resp.StatusCode, 300, "forceRaftSnapshot[%d]: status %d", idx, resp.StatusCode)
 }
 
-// TestSelfRecoveryEndToEnd boots a 3-node cluster with the SELF_RECOVERY
-// feature enabled, ingests data into a single-shard RF=3 collection,
-// wipes the data dir on node-3, restarts it, and verifies the shard is
-// re-hydrated automatically from a peer with full object count.
-//
-// It also asserts cluster reads at consistency=ONE keep working
-// throughout the recovery window (the recovering replica is excluded
-// from the eligible set via the existing FSM filter).
 func TestSelfRecoveryEndToEnd(t *testing.T) {
 	mainCtx := context.Background()
 	ctx, cancel := context.WithTimeout(mainCtx, 15*time.Minute)
@@ -221,11 +211,6 @@ func TestSelfRecoveryEndToEnd(t *testing.T) {
 	})
 }
 
-// TestSelfRecoveryReadsContinueAtConsistencyONE complements the e2e
-// test: while node-3 is recovering, asserts that consistency=ONE reads
-// against the cluster never error (the recovering replica is filtered
-// out by the existing FSM-based router filter). Runs as a separate test
-// to keep the e2e test focused.
 func TestSelfRecoveryReadsContinueAtConsistencyONE(t *testing.T) {
 	mainCtx := context.Background()
 	ctx, cancel := context.WithTimeout(mainCtx, 15*time.Minute)

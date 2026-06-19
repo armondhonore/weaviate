@@ -21,13 +21,6 @@ import (
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 )
 
-// TestLazyLoadShardLoadBlock covers the loadBlocked guard that
-// RecoveringShard uses to stop the inner Load from materialising an
-// empty shard from a missing on-disk dir.
-//
-// No full Shard/Index/metrics scaffolding is built: loadBlocked is the
-// first guard inside Load and short-circuits before any of it is
-// touched, so a hand-built LazyLoadShard suffices.
 func TestLazyLoadShardLoadBlock(t *testing.T) {
 	t.Run("blockLoad makes Load return the supplied error", func(t *testing.T) {
 		l := &LazyLoadShard{}
@@ -52,9 +45,6 @@ func TestLazyLoadShardLoadBlock(t *testing.T) {
 		l.blockLoad(enterrors.ErrShardRecovering)
 		l.clearLoadBlock()
 
-		// With the block cleared, Load proceeds into NewShard, which
-		// panics on nil opts. Recovering that panic proves the
-		// loadBlocked guard no longer short-circuits.
 		defer func() { _ = recover() }()
 		_ = l.Load(context.Background())
 	})
@@ -63,7 +53,6 @@ func TestLazyLoadShardLoadBlock(t *testing.T) {
 		l := &LazyLoadShard{loaded: true}
 		l.blockLoad(enterrors.ErrShardRecovering)
 
-		// Already-loaded path returns nil without consulting loadBlocked.
 		err := l.Load(context.Background())
 		require.NoError(t, err)
 	})

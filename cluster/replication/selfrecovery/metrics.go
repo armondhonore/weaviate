@@ -19,17 +19,15 @@ import (
 )
 
 // Metrics holds Prometheus collectors for the self-recovery subsystem.
-// No (collection, shard) labels: a wiped node restoring many shards
-// would otherwise inflate cardinality. Per-shard drill-down lives in
-// /replication/replicate/list and structured logs.
+// No (collection, shard) labels to avoid cardinality blowup on a wiped node.
 type Metrics struct {
 	InProgress                 prometheus.Gauge
-	StartedTotal               *prometheus.CounterVec   // labels: source_node
-	CompletedTotal             *prometheus.CounterVec   // labels: result (success|failure|empty_fallback|cancelled)
-	DurationSeconds            *prometheus.HistogramVec // labels: result (success|failure|empty_fallback|cancelled)
+	StartedTotal               *prometheus.CounterVec
+	CompletedTotal             *prometheus.CounterVec
+	DurationSeconds            *prometheus.HistogramVec
 	NoDataEmptyTotal           prometheus.Counter
 	NoDataDuringBootstrapTotal prometheus.Counter
-	UnreachablePeerTotal       *prometheus.CounterVec // labels: peer
+	UnreachablePeerTotal       *prometheus.CounterVec
 	GiveupTotal                prometheus.Counter
 	AcceptEmptyTotal           prometheus.Counter
 	SubmitDroppedTotal         prometheus.Counter
@@ -40,8 +38,7 @@ var (
 	metricsInst *Metrics
 )
 
-// GlobalMetrics returns the process-wide Metrics singleton, registering
-// on the default Prometheus registry on first call.
+// GlobalMetrics returns the process-wide Metrics singleton.
 func GlobalMetrics() *Metrics {
 	metricsOnce.Do(func() {
 		metricsInst = &Metrics{

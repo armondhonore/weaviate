@@ -34,8 +34,6 @@ func TestWipedJoinerIsCandidate(t *testing.T) {
 		{name: "wiped node, feature on -> candidate", selfRecovery: true, want: true},
 		{name: "feature off -> legacy eager", selfRecovery: false, want: false},
 		{name: "metadata-only voter excluded", selfRecovery: true, metadataOnly: true, want: false},
-		// "node with prior state is excluded" (the negative the log-replay
-		// acceptance test delegates here).
 		{name: "prior applied state excluded", selfRecovery: true, lastAppliedToDB: 42, want: false},
 		{name: "prior snapshot excluded", selfRecovery: true, snapIndex: 7, want: false},
 	}
@@ -172,12 +170,8 @@ func TestWipedJoinerBarrierTimeout(t *testing.T) {
 	})
 }
 
-// Guard against a regression where a non-candidate node (intact restart /
-// feature off) accidentally engages the wiped-joiner suppression.
 func TestNonCandidateNotSuppressed(t *testing.T) {
 	st := &Store{}
 	require.False(t, st.wipedJoinerCandidate.Load())
-	// forceSchemaOnly in Apply is `candidate && !reloaded`; for a non-candidate
-	// it must be false regardless of reloaded.
 	assert.False(t, st.wipedJoinerCandidate.Load() && !st.wipedJoinerReloaded.Load())
 }

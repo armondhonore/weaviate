@@ -89,11 +89,8 @@ func (c *Copier) CopyReplicaFiles(ctx context.Context, srcNodeId, collectionName
 	return c.CopyReplicaFilesToLocalShard(ctx, srcNodeId, collectionName, shardName, "", schemaVersion)
 }
 
-// CopyReplicaFilesToLocalShard is like CopyReplicaFiles but lands files
-// in a different local shard directory when localShardOverride is set
-// (used by SELF_RECOVERY to write into "<shard>.recovering/"; the caller
-// then renames via PromoteRecoveryFolder). CRC32 per-file resume still
-// works across crashes since it operates on the local destination paths.
+// CopyReplicaFilesToLocalShard lands files in localShardOverride when set
+// (SELF_RECOVERY writes "<shard>.recovering/", then PromoteRecoveryFolder renames).
 func (c *Copier) CopyReplicaFilesToLocalShard(ctx context.Context, srcNodeId, collectionName, shardName, localShardOverride string, schemaVersion uint64) error {
 	sourceNodeAddress := c.nodeSelector.NodeAddress(srcNodeId)
 
@@ -203,10 +200,8 @@ func (c *Copier) localShardName(srcShard, override string) string {
 	return override
 }
 
-// rewriteRelPathToLocalShard rewrites the shard segment of a
-// source-relative path (e.g. "coll/shard/.../file") to localShard;
-// no-op when equal. Wire-protocol paths are always slash-separated
-// regardless of source OS, so split/join on '/', not filepath.Separator.
+// rewriteRelPathToLocalShard rewrites the shard segment of a source-relative
+// path to localShard. Wire paths are always slash-separated, so split on '/'.
 func (c *Copier) rewriteRelPathToLocalShard(srcRelPath, srcShard, localShard string) string {
 	if localShard == srcShard {
 		return srcRelPath
@@ -224,8 +219,7 @@ func (c *Copier) shardPath(collectionName, shardName string) string {
 }
 
 func (c *Copier) prepareLocalFolder(collectionName, shardName, localShard string, fileNames []string) error {
-	// Keyed by LOCAL relative path to match on-disk files (under
-	// localShard, not srcShard, for SELF_RECOVERY).
+	// Keyed by local relative path to match on-disk files.
 	fileNamesMap := make(map[string]struct{}, len(fileNames))
 	for _, fileName := range fileNames {
 		fileNamesMap[c.rewriteRelPathToLocalShard(fileName, shardName, localShard)] = struct{}{}
@@ -233,7 +227,7 @@ func (c *Copier) prepareLocalFolder(collectionName, shardName, localShard string
 
 	var dirs []string
 
-	// remove files in the local destination not in the source manifest.
+	// remove local files not in the source manifest
 	basePath := c.shardPath(collectionName, localShard)
 
 	err := filepath.WalkDir(basePath, func(path string, d fs.DirEntry, err error) error {
@@ -311,7 +305,6 @@ func (c *Copier) downloadWorker(ctx context.Context, client FileReplicationServi
 	metadataChan <-chan *protocol.FileMetadata, srcShard, localShard string,
 ) error {
 	for meta := range metadataChan {
-		// SELF_RECOVERY writes land in "<shard>.recovering/", not live "<shard>/".
 		localFilePath := filepath.Join(c.rootDataPath, c.rewriteRelPathToLocalShard(meta.FileName, srcShard, localShard))
 
 		_, checksum, err := integrity.CRC32(localFilePath)
@@ -425,13 +418,9 @@ func (c *Copier) LoadLocalShard(ctx context.Context, collectionName, shardName s
 	return idx.LoadLocalShard(ctx, shardName, false)
 }
 
-// PromoteRecoveryFolder atomically renames "<shard>.recovering/" into
-// "<shard>/" after a SELF_RECOVERY copy completes. Idempotent across
-// crashes: if the live dir already exists the recovery dir (if any) is
-// erased and the call is a no-op; if both dirs are missing it errors.
-// On a rename error the recovery dir is left in place so the next attempt
-// resumes via the CRC32 per-file logic. If fsync fails after a successful
-// rename, the live dir already exists and the next call is a no-op.
+// PromoteRecoveryFolder atomically renames "<shard>.recovering/" into "<shard>/"
+// after a SELF_RECOVERY copy. Idempotent across crashes: an existing live dir
+// makes it a no-op (stale recovery dir is erased); both missing is an error.
 func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 	recoveryPath := c.shardPath(collectionName, api.RecoveryFolderName(shardName))
 	livePath := c.shardPath(collectionName, shardName)
@@ -447,14 +436,13 @@ func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 
 	switch {
 	case liveExists && recoveryExists:
-		// Stale recovery dir from a crash before cleanup; live is canonical.
+		// stale recovery dir from a crash; live is canonical
 		if err := os.RemoveAll(recoveryPath); err != nil {
 			return fmt.Errorf("promote recovery folder: live dir already exists, but failed to remove stale %q: %w", recoveryPath, err)
 		}
 		return nil
 	case liveExists:
-		// Rename succeeded on a previous attempt and the caller crashed
-		// before observing READY; nothing to do.
+		// already promoted on a previous attempt
 		return nil
 	case !recoveryExists:
 		return fmt.Errorf("promote recovery folder: neither %q nor %q exists", recoveryPath, livePath)
@@ -464,7 +452,7 @@ func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 		return fmt.Errorf("promote recovery folder: rename %q -> %q: %w", recoveryPath, livePath, err)
 	}
 
-	// fsync parent so the rename is durable across a crash (POSIX).
+	// fsync parent so the rename is durable across a crash
 	parent := filepath.Dir(livePath)
 	if err := diskio.Fsync(parent); err != nil {
 		return fmt.Errorf("promote recovery folder: fsync parent %q: %w", parent, err)
@@ -472,9 +460,7 @@ func (c *Copier) PromoteRecoveryFolder(collectionName, shardName string) error {
 	return nil
 }
 
-// dirExists is (true, nil) for a directory, (false, nil) on ENOENT, and
-// (false, err) otherwise — including a non-dir at path, so a stray file
-// isn't mistaken for a present shard dir.
+// dirExists reports whether path is a directory; a non-dir at path is an error.
 func dirExists(path string) (bool, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -490,7 +476,7 @@ func dirExists(path string) (bool, error) {
 }
 
 func (c *Copier) validateLocalFolder(collectionName, shardName, localShard string, fileNames []string) error {
-	// Keyed by LOCAL relative path; see prepareLocalFolder.
+	// Keyed by local relative path; see prepareLocalFolder.
 	fileNamesMap := make(map[string]struct{}, len(fileNames))
 	for _, fileName := range fileNames {
 		fileNamesMap[c.rewriteRelPathToLocalShard(fileName, shardName, localShard)] = struct{}{}
@@ -502,8 +488,7 @@ func (c *Copier) validateLocalFolder(collectionName, shardName, localShard strin
 
 	err := filepath.WalkDir(basePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// Missing basePath = no local files = no orphans to flag (e.g. an
-			// empty-manifest source shard never created the dir); treat as valid.
+			// missing basePath means no local files, nothing to validate
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}

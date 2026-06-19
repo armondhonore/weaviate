@@ -35,10 +35,9 @@ import (
 
 // StopNodeAt stops the container at the given DockerCompose index.
 //
-// NOTE: index is the 0-based DockerCompose container position, NOT a
-// logical Weaviate node number. Non-Weaviate services (MinIO,
-// contextionary, etc.) precede the Weaviate nodes, so index=0 is
-// usually not the first Weaviate node — use compose.GetWeaviate*().
+// index is the 0-based container position, NOT a logical Weaviate node number:
+// non-Weaviate services precede the Weaviate nodes, so index=0 is usually not
+// the first Weaviate node.
 func StopNodeAt(ctx context.Context, t *testing.T, compose *docker.DockerCompose, index int) {
 	<-time.After(1 * time.Second)
 	if err := compose.StopAt(ctx, index, nil); err != nil {
@@ -50,7 +49,7 @@ func StopNodeAt(ctx context.Context, t *testing.T, compose *docker.DockerCompose
 }
 
 // StopNodeAtWithTimeout is StopNodeAt with an explicit graceful-shutdown
-// timeout (timeout=0 = SIGKILL). See StopNodeAt's NOTE on index semantics.
+// timeout (timeout=0 = SIGKILL).
 func StopNodeAtWithTimeout(ctx context.Context, t *testing.T, compose *docker.DockerCompose, index int, timeout time.Duration) {
 	<-time.After(1 * time.Second)
 	if err := compose.StopAt(ctx, index, &timeout); err != nil {
@@ -61,15 +60,10 @@ func StopNodeAtWithTimeout(ctx context.Context, t *testing.T, compose *docker.Do
 	<-time.After(1 * time.Second) // give time for shutdown
 }
 
-// WipeNodeDataAt simulates data loss: it deletes /data contents inside
-// the container then SIGKILL-stops it (caller restarts via StartNodeAt).
-// See StopNodeAt's NOTE on index semantics.
-//
-// The wipe is two-pronged: `find -mindepth 1 -delete` catches dotdirs
-// like .raft that a glob misses, and with WithWeaviateTmpfsData the
-// stop also unmounts the /data tmpfs. Self-recovery tests need the
-// tmpfs: otherwise weaviate's open-fd writes between delete and SIGKILL
-// race the wipe, leaving /data non-empty on restart.
+// WipeNodeDataAt simulates data loss: it deletes /data contents then
+// SIGKILL-stops the container (caller restarts via StartNodeAt). Pair with
+// WithWeaviateTmpfsData: otherwise weaviate's open-fd writes between delete and
+// SIGKILL race the wipe, leaving /data non-empty on restart.
 func WipeNodeDataAt(ctx context.Context, t *testing.T, compose *docker.DockerCompose, index int) {
 	t.Helper()
 	c, err := compose.ContainerAt(index)
@@ -81,7 +75,6 @@ func WipeNodeDataAt(ctx context.Context, t *testing.T, compose *docker.DockerCom
 }
 
 // StartNodeAt starts the container at the given DockerCompose index.
-// See StopNodeAt's NOTE on index semantics.
 func StartNodeAt(ctx context.Context, t *testing.T, compose *docker.DockerCompose, index int) {
 	t.Helper()
 	if err := compose.StartAt(ctx, index); err != nil {

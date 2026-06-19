@@ -111,19 +111,17 @@ func (st *Store) Apply(l *raft.Log) any {
 	// we check for index !=0 to force apply of the 1st index in both db and schema
 	catchingUp := l.Index != 0 && l.Index <= st.lastAppliedIndexToDB.Load()
 
-	// A wiped joiner forces schemaOnly for every catch-up entry until its
-	// self-recovery reload runs, so re-hydratable shards aren't materialised
-	// empty. lastAppliedIndexToDB stays 0 (catchingUp alone wouldn't suppress,
-	// and snapshot-Restore is unaffected); the join barrier drives the reload.
+	// A wiped joiner forces schemaOnly for every catch-up entry until its reload
+	// runs, so re-hydratable shards aren't materialised empty; the join barrier
+	// drives the reload.
 	forceSchemaOnly := st.wipedJoinerCandidate.Load() && !st.wipedJoinerReloaded.Load()
 
 	// TODO: get rid off schema only as it causes more trouble than it's worth
 	// T-Nr: DB-306
 	schemaOnly := catchingUp || forceSchemaOnly || st.cfg.MetadataOnlyVoters
 
-	// schemaCallback gates the per-entry schema-update callback (GraphQL rebuild
-	// etc.). Off during any catch-up — incl. a wiped joiner's — so it fires once
-	// at the reload, not per replayed entry, matching the snapshot-Restore path.
+	// Gate the per-entry schema-update callback off during catch-up so it fires
+	// once at the reload, not per replayed entry.
 	schemaCallback := !catchingUp && !forceSchemaOnly
 	defer func() {
 		// If we have an applied index from the previous store (i.e from disk). Then reload the DB once we catch up as
@@ -142,9 +140,8 @@ func (st *Store) Apply(l *raft.Log) any {
 			st.reloadDBFromSchema()
 		}
 
-		// A wiped joiner reloads once applied up to the join barrier. Firing
-		// here keeps the reload on the Apply thread (safe); it's idempotent with
-		// the snapshot-Restore and watcher fallback paths.
+		// A wiped joiner reloads once applied up to the join barrier; firing here
+		// keeps the reload on the Apply thread. Idempotent with the other paths.
 		if st.wipedJoinerCandidate.Load() &&
 			wipedJoinerBarrierReached(st.wipedJoinerReloaded.Load(), st.joinBarrier.Load(), l.Index) {
 			st.log.WithFields(logrus.Fields{

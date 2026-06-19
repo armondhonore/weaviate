@@ -35,9 +35,6 @@ func quietLogger() *logrus.Logger {
 	return l
 }
 
-// TestSubmit_DeclinesWhenDisabledOrMaintenance verifies Submit reports
-// false (so the caller falls back to normal init) when the feature is
-// off or maintenance mode is on, and true when the work is queued.
 func TestSubmit_DeclinesWhenDisabledOrMaintenance(t *testing.T) {
 	mk := func(enabled bool, maint func() bool) *Orchestrator {
 		o := newOrchestratorForTest(t, &stubRaft{},
@@ -62,10 +59,6 @@ func TestSubmit_DeclinesWhenDisabledOrMaintenance(t *testing.T) {
 	})
 }
 
-// TestSubmit_QueueFullDropsAndReturnsFalse verifies that once the bounded
-// worker queue overflows, Submit returns false and bumps SubmitDroppedTotal
-// (so the startup hook can fall back to normal init rather than strand the
-// shard in RECOVERING).
 func TestSubmit_QueueFullDropsAndReturnsFalse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	block := make(chan struct{})
@@ -90,7 +83,7 @@ func TestSubmit_QueueFullDropsAndReturnsFalse(t *testing.T) {
 		PollInterval: 10 * time.Millisecond,
 		ProbeTimeout: time.Second,
 	})
-	o.submitQueueCapacity = 1 // make overflow trivial to provoke
+	o.submitQueueCapacity = 1
 
 	before := testutil.ToFloat64(o.metrics.SubmitDroppedTotal)
 	dropped := 0
@@ -104,28 +97,22 @@ func TestSubmit_QueueFullDropsAndReturnsFalse(t *testing.T) {
 		"SubmitDroppedTotal must count exactly the dropped submits")
 }
 
-// TestClose_DrainsWorkersAndRefusesNewSubmits: Close stops accepting
-// new work and waits for live workers to return. Idempotent.
 func TestClose_DrainsWorkersAndRefusesNewSubmits(t *testing.T) {
 	o := newOrchestratorForTest(t, &stubRaft{},
 		stubSchema{replicas: []string{"self"}}, &stubNodeSelector{}, nil,
 		stubPathResolver{root: t.TempDir()})
 	o.enabled = true
 
-	// Submit a fast no-op (single replica → handleEmptyFallback path).
 	require.True(t, o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S"}, false))
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, o.Close(closeCtx))
 
-	// Post-close: Submit refuses; second Close is a no-op.
 	require.False(t, o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S2"}, false))
 	require.NoError(t, o.Close(context.Background()))
 }
 
-// TestClose_BeforeAnySubmit: closing an orchestrator that never had
-// Submit called (and therefore no worker pool) is safe.
 func TestClose_BeforeAnySubmit(t *testing.T) {
 	o := newOrchestratorForTest(t, &stubRaft{}, stubSchema{}, &stubNodeSelector{}, nil,
 		stubPathResolver{root: t.TempDir()})
@@ -133,11 +120,6 @@ func TestClose_BeforeAnySubmit(t *testing.T) {
 	require.False(t, o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S"}, false))
 }
 
-// TestClose_SurfacesDeadlineWhenWorkerStuck: when a worker is
-// genuinely stuck in a non-ctx-aware blocking call, Close honours the
-// caller's deadline by returning ctx.Err() rather than waiting
-// indefinitely. (The shutdown ctx is still cancelled so the worker
-// will exit if/when it ever observes cancellation.)
 func TestClose_SurfacesDeadlineWhenWorkerStuck(t *testing.T) {
 	block := make(chan struct{})
 	probeCalled := make(chan struct{}, 1)
@@ -154,9 +136,6 @@ func TestClose_SurfacesDeadlineWhenWorkerStuck(t *testing.T) {
 		NodeSelector: ns,
 		NodeName:     "self",
 		Enabled:      true,
-		// ClientFactory signals on first entry, then blocks until
-		// released — simulates a peer probe that ignores ctx and
-		// won't return promptly when shutdownCtx is cancelled.
 		ClientFactory: func(_ context.Context, _ string) (copier.FileReplicationServiceClient, error) {
 			select {
 			case probeCalled <- struct{}{}:
@@ -171,10 +150,6 @@ func TestClose_SurfacesDeadlineWhenWorkerStuck(t *testing.T) {
 	})
 	require.True(t, o.Submit(context.Background(), ShardRef{Collection: "C", Shard: "S"}, false))
 
-	// Wait until the worker is genuinely inside the blocking factory
-	// call. Without this, Close races the worker's path from queue-
-	// dequeue → probe-dispatch and may observe a clean exit before the
-	// stuck call is reached.
 	select {
 	case <-probeCalled:
 	case <-time.After(2 * time.Second):
@@ -188,8 +163,6 @@ func TestClose_SurfacesDeadlineWhenWorkerStuck(t *testing.T) {
 		"Close must surface the caller's deadline when workers don't drain in time")
 }
 
-// TestHasInflightReplicationOp covers the M2 guard: only a non-terminal
-// op targeting this node counts.
 func TestHasInflightReplicationOp(t *testing.T) {
 	op := func(target, transfer string, state api.ShardReplicationState) api.ReplicationDetailsResponse {
 		return api.ReplicationDetailsResponse{
@@ -231,9 +204,6 @@ func TestHasInflightReplicationOp(t *testing.T) {
 	}
 }
 
-// TestRunOne_GiveUpAfterMaxAttempts: all peers unreachable forever →
-// runOne exhausts retries, ticks GiveupTotal and CompletedTotal{failure},
-// and returns instead of looping forever.
 func TestRunOne_GiveUpAfterMaxAttempts(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1"},
@@ -263,10 +233,6 @@ func TestRunOne_GiveUpAfterMaxAttempts(t *testing.T) {
 	require.InDelta(t, beforeFailure+1, testutil.ToFloat64(o.metrics.CompletedTotal.WithLabelValues("failure")), 0.001)
 }
 
-// TestRunOne_EmptyFallbackBootstrapSeverity verifies the per-op
-// fromBootstrap flag routes the all-peers-empty outcome to the
-// gentler counter during the RAFT bootstrap window and to the
-// catastrophic-wipe counter otherwise.
 func TestRunOne_EmptyFallbackBootstrapSeverity(t *testing.T) {
 	mkOrch := func(t *testing.T) (*Orchestrator, string) {
 		root := t.TempDir()
@@ -277,7 +243,7 @@ func TestRunOne_EmptyFallbackBootstrapSeverity(t *testing.T) {
 		clientFactory := func(_ context.Context, _ string) (copier.FileReplicationServiceClient, error) {
 			return &stubFileReplicationClient{
 				listFiles: func(_ context.Context, _ *protocol.ListFilesRequest) (*protocol.ListFilesResponse, error) {
-					return &protocol.ListFilesResponse{}, nil // definitively empty
+					return &protocol.ListFilesResponse{}, nil
 				},
 			}, nil
 		}
@@ -289,7 +255,7 @@ func TestRunOne_EmptyFallbackBootstrapSeverity(t *testing.T) {
 		o, _ := mkOrch(t)
 		before := testutil.ToFloat64(o.metrics.NoDataDuringBootstrapTotal)
 		beforeOther := testutil.ToFloat64(o.metrics.NoDataEmptyTotal)
-		o.runOne(context.Background(), ShardRef{Collection: "C", Shard: "S"}, true /* fromBootstrap */)
+		o.runOne(context.Background(), ShardRef{Collection: "C", Shard: "S"}, true)
 		require.InDelta(t, before+1, testutil.ToFloat64(o.metrics.NoDataDuringBootstrapTotal), 0.001)
 		require.InDelta(t, beforeOther, testutil.ToFloat64(o.metrics.NoDataEmptyTotal), 0.001)
 	})
@@ -303,10 +269,6 @@ func TestRunOne_EmptyFallbackBootstrapSeverity(t *testing.T) {
 	})
 }
 
-// TestRunOne_EmptyFallbackPromoteFailureRecordsFailure: a promote
-// failure after the empty-shard dir is created must record failure,
-// not success — otherwise the wrapper stays load-blocked while metrics
-// claim success.
 func TestRunOne_EmptyFallbackPromoteFailureRecordsFailure(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1"},
@@ -315,7 +277,7 @@ func TestRunOne_EmptyFallbackPromoteFailureRecordsFailure(t *testing.T) {
 	clientFactory := func(_ context.Context, _ string) (copier.FileReplicationServiceClient, error) {
 		return &stubFileReplicationClient{
 			listFiles: func(_ context.Context, _ *protocol.ListFilesRequest) (*protocol.ListFilesResponse, error) {
-				return &protocol.ListFilesResponse{}, nil // definitively empty → triggers fallback
+				return &protocol.ListFilesResponse{}, nil
 			},
 		}, nil
 	}
@@ -343,9 +305,6 @@ func TestRunOne_EmptyFallbackPromoteFailureRecordsFailure(t *testing.T) {
 		"NoDataEmptyTotal increments only after a successful promote")
 }
 
-// TestRunOne_EmptyFallbackSuccessRecordsEmptyFallbackLabel: happy-path
-// empty-fallback records under the empty_fallback label on
-// CompletedTotal, never success or failure.
 func TestRunOne_EmptyFallbackSuccessRecordsEmptyFallbackLabel(t *testing.T) {
 	ns := &stubNodeSelector{
 		addrs: map[string]string{"peer1": "10.0.0.1"},
@@ -354,7 +313,7 @@ func TestRunOne_EmptyFallbackSuccessRecordsEmptyFallbackLabel(t *testing.T) {
 	clientFactory := func(_ context.Context, _ string) (copier.FileReplicationServiceClient, error) {
 		return &stubFileReplicationClient{
 			listFiles: func(_ context.Context, _ *protocol.ListFilesRequest) (*protocol.ListFilesResponse, error) {
-				return &protocol.ListFilesResponse{}, nil // definitively empty → triggers fallback
+				return &protocol.ListFilesResponse{}, nil
 			},
 		}, nil
 	}
@@ -376,10 +335,6 @@ func TestRunOne_EmptyFallbackSuccessRecordsEmptyFallbackLabel(t *testing.T) {
 		"empty-fallback must NOT inflate the failure label (the benign bootstrap-window case would generate spurious failure alerts)")
 }
 
-// TestProbeErrorClassifiers pins the rolling-upgrade substring fallbacks
-// used when an older peer doesn't carry typed gRPC codes: a shard-absent
-// phrasing must classify as "definitively empty", "not paused" must
-// classify as "shard present", and an unrelated error must be neither.
 func TestProbeErrorClassifiers(t *testing.T) {
 	require.True(t, isShardAbsentErr(errors.New("rpc error: incoming list files get shard is nil")))
 	require.True(t, isShardAbsentErr(errors.New("shard not found")))
@@ -391,8 +346,6 @@ func TestProbeErrorClassifiers(t *testing.T) {
 	require.False(t, isShardPresentButNotPausedErr(nil))
 }
 
-// TestRestart_RejectsWhenLiveDirExists: /restart on a shard that already
-// has a live local dir is a 409-class error and must not cancel anything.
 func TestRestart_RejectsWhenLiveDirExists(t *testing.T) {
 	tmp := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmp+"/C/S", 0o755))
@@ -405,9 +358,6 @@ func TestRestart_RejectsWhenLiveDirExists(t *testing.T) {
 	require.Empty(t, raft.cancelled, "Restart must bail before cancelling when the live dir exists")
 }
 
-// TestRestart_SchemaErrorIsTypedSentinel: Restart on an unknown shard
-// returns ErrSelfRecoveryShardNotInSchema (handler maps to 404) and
-// touches neither RAFT ops nor on-disk paths.
 func TestRestart_SchemaErrorIsTypedSentinel(t *testing.T) {
 	tmp := t.TempDir()
 	recoveryPath := tmp + "/NoSuch/S.recovering"
@@ -428,10 +378,8 @@ func TestRestart_SchemaErrorIsTypedSentinel(t *testing.T) {
 	require.NoError(t, statErr, "recovery dir must not be touched when the schema gate refuses the request")
 }
 
-// TestWaitForOpTerminal_VanishedGrace: a polled op that the FSM reports
-// as not-found is treated as terminal, after the grace sleep.
 func TestWaitForOpTerminal_VanishedGrace(t *testing.T) {
-	raft := &stubRaft{detailsByUUID: nil} // every lookup returns not-found
+	raft := &stubRaft{detailsByUUID: nil}
 	o := newOrchestratorForTest(t, raft, stubSchema{}, &stubNodeSelector{}, nil, stubPathResolver{root: t.TempDir()})
 
 	start := time.Now()
@@ -439,12 +387,6 @@ func TestWaitForOpTerminal_VanishedGrace(t *testing.T) {
 	require.GreaterOrEqual(t, time.Since(start), o.vanishedGracePeriod, "must wait the grace period before returning")
 }
 
-// TestRestart_SerialisedAgainstInFlightWorker: a worker for the same
-// shard already holds the per-shard lock (simulated by manually
-// acquiring it in a peer goroutine). Restart must wait its turn and
-// proceed only after the worker releases. This is the regression
-// guard for F2/F3: without the lock, concurrent Restarts and a stale
-// worker can race the cancel+erase+resubmit sequence.
 func TestRestart_SerialisedAgainstInFlightWorker(t *testing.T) {
 	tmp := t.TempDir()
 	o := newOrchestratorForTest(t, &stubRaft{},
@@ -469,7 +411,6 @@ func TestRestart_SerialisedAgainstInFlightWorker(t *testing.T) {
 		restartDone <- o.Restart(context.Background(), ref)
 	}()
 
-	// Restart must block while the worker holds the lock.
 	select {
 	case <-restartDone:
 		t.Fatal("Restart returned while a worker still held the shard lock")
@@ -479,7 +420,6 @@ func TestRestart_SerialisedAgainstInFlightWorker(t *testing.T) {
 	close(workerReleases)
 	<-workerDone
 
-	// Once the worker releases, Restart proceeds.
 	select {
 	case err := <-restartDone:
 		require.NoError(t, err)
@@ -488,9 +428,6 @@ func TestRestart_SerialisedAgainstInFlightWorker(t *testing.T) {
 	}
 }
 
-// TestRestart_TimeoutLeavesRecoveryDir: when an in-flight op never
-// settles, Restart honours its timeout, returns an error, and leaves the
-// partial ".recovering/" dir intact (so the next attempt can resume).
 func TestRestart_TimeoutLeavesRecoveryDir(t *testing.T) {
 	tmp := t.TempDir()
 	recoveryPath := tmp + "/C/S.recovering"
@@ -510,7 +447,7 @@ func TestRestart_TimeoutLeavesRecoveryDir(t *testing.T) {
 			}},
 		},
 		detailsByUUID: map[strfmt.UUID]api.ReplicationDetailsResponse{
-			inflightUUID: {Status: api.ReplicationDetailsState{State: string(api.HYDRATING)}}, // never terminal
+			inflightUUID: {Status: api.ReplicationDetailsState{State: string(api.HYDRATING)}},
 		},
 	}
 	o := newOrchestratorForTest(t, raft, stubSchema{replicas: []string{"self", "peer1"}}, &stubNodeSelector{}, nil, stubPathResolver{root: tmp})

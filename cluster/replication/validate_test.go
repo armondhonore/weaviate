@@ -20,9 +20,6 @@ import (
 	"github.com/weaviate/weaviate/cluster/schema"
 )
 
-// stubSchemaReader is a minimal in-test implementation of the
-// validateSchemaReader interface used to exercise
-// ValidateReplicationReplicateShard without standing up a full schema.
 type stubSchemaReader struct {
 	classExists bool
 	replicas    []string
@@ -45,7 +42,6 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		tgt  = "node-B"
 	)
 
-	// Case 1: COPY rejected when target is already in the replica set.
 	t.Run("copy_rejects_existing_target", func(t *testing.T) {
 		err := ValidateReplicationReplicateShard(stubSchemaReader{
 			classExists: true,
@@ -62,9 +58,6 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		require.True(t, errors.Is(err, ErrAlreadyExists), "expected ErrAlreadyExists, got %v", err)
 	})
 
-	// Case 2: SELF_RECOVERY accepted when target is already a replica
-	// (this is the whole point — the on-disk data was lost, the schema
-	// still lists this node as a replica, and we want to re-hydrate).
 	t.Run("self_recovery_accepts_existing_target", func(t *testing.T) {
 		err := ValidateReplicationReplicateShard(stubSchemaReader{
 			classExists: true,
@@ -80,13 +73,10 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	// Case 3: SELF_RECOVERY rejects when target is NOT a replica per
-	// schema (logic error somewhere upstream — recovering a node that
-	// does not own the shard makes no sense).
 	t.Run("self_recovery_rejects_non_replica_target", func(t *testing.T) {
 		err := ValidateReplicationReplicateShard(stubSchemaReader{
 			classExists: true,
-			replicas:    []string{src}, // tgt absent
+			replicas:    []string{src},
 		}, &api.ReplicationReplicateShardRequest{
 			Uuid:             "00000000-0000-0000-0000-000000000003",
 			SourceNode:       src,
@@ -99,13 +89,10 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		require.True(t, errors.Is(err, ErrNodeNotFound), "expected ErrNodeNotFound, got %v", err)
 	})
 
-	// Case 4: SELF_RECOVERY rejects when source is missing — even though
-	// target-existence is fine, we cannot copy from a peer that does
-	// not have the shard.
 	t.Run("self_recovery_rejects_missing_source", func(t *testing.T) {
 		err := ValidateReplicationReplicateShard(stubSchemaReader{
 			classExists: true,
-			replicas:    []string{tgt}, // src absent
+			replicas:    []string{tgt},
 		}, &api.ReplicationReplicateShardRequest{
 			Uuid:             "00000000-0000-0000-0000-000000000004",
 			SourceNode:       src,
@@ -118,8 +105,6 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		require.True(t, errors.Is(err, ErrNodeNotFound), "expected ErrNodeNotFound, got %v", err)
 	})
 
-	// Case 5: shared rejections still apply for SELF_RECOVERY (uuid,
-	// same source/target).
 	t.Run("self_recovery_rejects_same_source_target", func(t *testing.T) {
 		err := ValidateReplicationReplicateShard(stubSchemaReader{
 			classExists: true,
@@ -127,7 +112,7 @@ func TestValidateReplicationReplicateShard(t *testing.T) {
 		}, &api.ReplicationReplicateShardRequest{
 			Uuid:             "00000000-0000-0000-0000-000000000005",
 			SourceNode:       src,
-			TargetNode:       src, // same as source
+			TargetNode:       src,
 			SourceCollection: coll,
 			SourceShard:      sh,
 			TransferType:     api.SELF_RECOVERY.String(),

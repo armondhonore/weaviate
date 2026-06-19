@@ -577,8 +577,7 @@ func (c *CopyOpConsumer) processHydratingOp(ctx context.Context, op ShardReplica
 		return api.ShardReplicationState(""), ctx.Err()
 	}
 
-	// SELF_RECOVERY lands files in "<shard>.recovering/"; FINALIZING
-	// renames it into place atomically.
+	// SELF_RECOVERY lands files in "<shard>.recovering/"; FINALIZING renames it.
 	if op.Op.TransferType == api.SELF_RECOVERY {
 		if err := c.replicaCopier.CopyReplicaFilesToLocalShard(ctx, op.Op.SourceShard.NodeId, op.Op.SourceShard.CollectionId, op.Op.TargetShard.ShardId, api.RecoveryFolderName(op.Op.TargetShard.ShardId), op.Status.SchemaVersion); err != nil {
 			logger.WithError(err).Error("failure while copying replica shard for self-recovery")
@@ -613,8 +612,7 @@ func (c *CopyOpConsumer) processFinalizingOp(ctx context.Context, op ShardReplic
 		return api.ShardReplicationState(""), err
 	}
 
-	// SELF_RECOVERY: rename "<shard>.recovering/" -> "<shard>/" before
-	// LoadLocalShard so init reads from the live dir.
+	// SELF_RECOVERY: promote "<shard>.recovering/" before LoadLocalShard reads it.
 	if op.Op.TransferType == api.SELF_RECOVERY {
 		if err := c.replicaCopier.PromoteRecoveryFolder(op.Op.TargetShard.CollectionId, op.Op.TargetShard.ShardId); err != nil {
 			logger.WithError(err).Error("failure while promoting recovery folder")
@@ -679,9 +677,7 @@ func (c *CopyOpConsumer) processFinalizingOp(ctx context.Context, op ShardReplic
 
 	switch op.Op.TransferType {
 	case api.COPY, api.SELF_RECOVERY:
-		// SELF_RECOVERY mirrors COPY here: source stays a replica, the
-		// membership check above already saw replicaExists=true so
-		// AddReplicaToShard was skipped.
+		// SELF_RECOVERY mirrors COPY; source stays a replica.
 		c.stopAsyncReplication(ctx, op, overrides, logger)
 		// sync the replica shard to ensure that the schema and store are consistent on each node
 		// In a COPY/SELF_RECOVERY this happens now, in a MOVE this happens in the DEHYDRATING state

@@ -187,8 +187,7 @@ func (i *Index) getShardsNodeStatus(ctx context.Context,
 
 		// Don't force load a lazy shard to get nodes status
 		className := i.Config.ClassName.String()
-		// RecoveringShard: report RECOVERING without forcing a load
-		// (which would block on ErrShardRecovering).
+		// Report RECOVERING without forcing a load.
 		if rec, ok := shard.(*RecoveringShard); ok {
 			if rec.IsRecovering() {
 				numberOfReplicas, replicationFactor := getShardReplicationDetails(i, shard.Name())
