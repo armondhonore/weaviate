@@ -1435,6 +1435,13 @@ func FromEnv(config *Config) error {
 
 	config.DisableDimensionMetrics = configRuntime.NewDynamicValue(disableDimensionMetrics)
 
+	if config.Replication.SelfRecoveryEnabled && !config.ReplicaMovementEnabled {
+		logrus.Warn("SELF_RECOVERY_ENABLED requires REPLICA_MOVEMENT_ENABLED=true; disabling " +
+			"self-recovery to avoid shards stuck in RECOVERING (the replication engine that " +
+			"processes recovery copy ops only runs when replica movement is enabled)")
+		config.Replication.SelfRecoveryEnabled = false
+	}
+
 	return nil
 }
 
