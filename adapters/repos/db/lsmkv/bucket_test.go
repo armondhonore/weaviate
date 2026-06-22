@@ -2386,6 +2386,38 @@ type kv struct {
 	values []MapPair
 }
 
+// assertBMWResultMatchesExpected verifies a BMW/WAND result map against an
+// expected MapPair list in both directions:
+//   - every non-tombstoned expected doc must be in the result with the right
+//     frequency (catches non-tombstoned docs missing from the result)
+//   - every doc in the result must correspond to a non-tombstoned expected doc
+//     (catches tombstoned docs leaking into the result — the failure mode the
+//     deferred-tombstone scoring path is most at risk of introducing)
+func assertBMWResultMatchesExpected(expected []MapPair, got map[uint64][]*terms.DocPointerWithScore) error {
+	allowed := make(map[uint64]bool, len(expected))
+	for _, val := range expected {
+		if val.Tombstone {
+			continue
+		}
+		docId := binary.BigEndian.Uint64(val.Key)
+		allowed[docId] = true
+
+		freq := math.Float32frombits(binary.LittleEndian.Uint32(val.Value[0:4]))
+		if _, ok := got[docId]; !ok {
+			return fmt.Errorf("expected docId %v not found in result: %v", docId, got)
+		}
+		if got[docId][0].Frequency != freq {
+			return fmt.Errorf("docId %v: expected frequency %v but got %v", docId, freq, got[docId][0].Frequency)
+		}
+	}
+	for docId := range got {
+		if !allowed[docId] {
+			return fmt.Errorf("unexpected docId %v in result (tombstoned or absent from expected): %v", docId, got)
+		}
+	}
+	return nil
+}
+
 func validateMapPairListVsBlockMaxSearch(ctx context.Context, bucket *Bucket, expectedMultiKey []kv) error {
 	view := bucket.GetConsistentView()
 	defer view.ReleaseView()
@@ -2412,7 +2444,7 @@ func validateMapPairListVsBlockMaxSearchFromView(ctx context.Context, bucket *Bu
 			return fmt.Errorf("failed to create disk term: %w", err)
 		}
 
-		expectedSet := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
+		got := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
 		for _, diskTerm := range diskTerms {
 			topKHeap, err := DoBlockMaxWand(ctx, N, diskTerm, avgPropLen, true, 1, 1, bucket.logger)
 			if err != nil {
@@ -2420,23 +2452,12 @@ func validateMapPairListVsBlockMaxSearchFromView(ctx context.Context, bucket *Bu
 			}
 			for topKHeap.Len() > 0 {
 				item := topKHeap.Pop()
-				expectedSet[item.ID] = item.Value
+				got[item.ID] = item.Value
 			}
 		}
 
-		for _, val := range expected {
-			docId := binary.BigEndian.Uint64(val.Key)
-			if val.Tombstone {
-				continue
-			}
-			freq := math.Float32frombits(binary.LittleEndian.Uint32(val.Value[0:4]))
-			if _, ok := expectedSet[docId]; !ok {
-				return fmt.Errorf("expected docId %v not found in topKHeap: %v", docId, expectedSet)
-			}
-			if expectedSet[docId][0].Frequency != freq {
-				return fmt.Errorf("expected frequency %v but got %v", freq, expectedSet[docId][0].Frequency)
-			}
-
+		if err := assertBMWResultMatchesExpected(expected, got); err != nil {
+			return err
 		}
 	}
 
@@ -2467,7 +2488,7 @@ func validateMapPairListVsBlockMaxSearchFromSegments(ctx context.Context, segmen
 			diskTerms = append(diskTerms, []*SegmentBlockMax{bmws})
 		}
 
-		expectedSet := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
+		got := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
 		for _, diskTerm := range diskTerms {
 			topKHeap, err := DoBlockMaxWand(ctx, N, diskTerm, avgPropLen, true, 1, 1, nil)
 			if err != nil {
@@ -2475,25 +2496,13 @@ func validateMapPairListVsBlockMaxSearchFromSegments(ctx context.Context, segmen
 			}
 			for topKHeap.Len() > 0 {
 				item := topKHeap.Pop()
-				expectedSet[item.ID] = item.Value
+				got[item.ID] = item.Value
 			}
 		}
 
-		for _, val := range expected {
-			docId := binary.BigEndian.Uint64(val.Key)
-			if val.Tombstone {
-				continue
-			}
-			freq := math.Float32frombits(binary.LittleEndian.Uint32(val.Value[0:4]))
-			if _, ok := expectedSet[docId]; !ok {
-				return fmt.Errorf("expected docId %v not found in topKHeap: %v", docId, expectedSet)
-			}
-			if expectedSet[docId][0].Frequency != freq {
-				return fmt.Errorf("expected frequency %v but got %v", freq, expectedSet[docId][0].Frequency)
-			}
-
+		if err := assertBMWResultMatchesExpected(expected, got); err != nil {
+			return err
 		}
-
 	}
 	return nil
 }

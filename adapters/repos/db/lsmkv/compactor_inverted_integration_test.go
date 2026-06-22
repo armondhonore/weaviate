@@ -182,7 +182,7 @@ func validateMapPairListVsWandSearch(ctx context.Context, bucket *Bucket, expect
 			return fmt.Errorf("failed to create term: %w", err)
 		}
 
-		expectedSet := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
+		got := make(map[uint64][]*terms.DocPointerWithScore, len(expected))
 		terms := &terms.Terms{
 			T:     []terms.TermInterface{term},
 			Count: 1,
@@ -192,22 +192,11 @@ func validateMapPairListVsWandSearch(ctx context.Context, bucket *Bucket, expect
 
 		for topKHeap.Len() > 0 {
 			item := topKHeap.Pop()
-			expectedSet[item.ID] = item.Value
+			got[item.ID] = item.Value
 		}
 
-		for _, val := range expected {
-			docId := binary.BigEndian.Uint64(val.Key)
-			if val.Tombstone {
-				continue
-			}
-			freq := math.Float32frombits(binary.LittleEndian.Uint32(val.Value[0:4]))
-			if _, ok := expectedSet[docId]; !ok {
-				return fmt.Errorf("expected docId %v not found in topKHeap: %v", docId, expectedSet)
-			}
-			if expectedSet[docId][0].Frequency != freq {
-				return fmt.Errorf("expected frequency %v but got %v", freq, expectedSet[docId][0].Frequency)
-			}
-
+		if err := assertBMWResultMatchesExpected(expected, got); err != nil {
+			return err
 		}
 	}
 
