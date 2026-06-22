@@ -1,0 +1,19 @@
+application:
+  name: weaviate
+  pods:
+  - name: app
+    image: semitechnologies/weaviate:latest
+    path: /
+    servicePorts:
+    - 8080
+    vars:
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      CLUSTER_HOSTNAME: "node1"
+    volumes:
+    - name: weaviate-data
+      mountPath: /var/lib/weaviate
+      size: 10Gi
