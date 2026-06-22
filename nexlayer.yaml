@@ -2,7 +2,7 @@ application:
   name: weaviate
   pods:
   - name: app
-    image: semitechnologies/weaviate:latest
+    image: mirror.gcr.io/semitechnologies/weaviate:latest
     path: /
     servicePorts:
     - 8080
